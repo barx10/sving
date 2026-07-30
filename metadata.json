@@ -1,0 +1,6 @@
+{
+  "name": "Sving - Norsk MC-turplanlegger",
+  "description": "Enkel, lynrask norsk MC-turplanlegger for svingete og naturskjønne veier med høydeprofil, værvarsel fra MET.no, fjelloverganger, GPX-eksport og smart Google/Apple Maps deep links.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
