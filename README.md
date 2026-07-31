@@ -51,6 +51,7 @@ i stedet for å gjette:
 | Data | Kilde | Merk |
 | --- | --- | --- |
 | Ruting | OpenRouteService (med nøkkel) eller OSRM | Kjøretid er et estimat, uten ferje og pauser |
+| Svingethet | Beregnet av oss fra rutegeometrien | Grader retningsendring per km. Ingen rutemotor vi bruker tilbyr MC-profil, så alternativene rangeres av oss |
 | Høyde | Open-Meteo (Copernicus DEM 30 m), reserve: Open-Elevation | Utelates helt hvis begge feiler |
 | Vær | MET.no Locationforecast 2.0 | Vises som utilgjengelig hvis MET.no ikke svarer |
 | Stedsnavn | Nominatim (OpenStreetMap) | Går via egen server med rate limiting og cache |
