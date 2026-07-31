@@ -22,6 +22,7 @@ import {
 } from './api';
 import { PRESET_ROUTES } from './data/presetRoutes';
 import { cumulativeDistancesKm, hasCoords, haversineDistance } from './utils/geo';
+import { pickWeatherFractions } from './utils/weatherCheckpoints';
 import { decodeRouteFromHash, encodeRouteToHash } from './utils/routeLink';
 import { Header } from './components/Header';
 import { RouteEditor } from './components/RouteEditor';
@@ -128,7 +129,7 @@ export default function App() {
       const totalKm = distances[distances.length - 1];
       if (totalKm <= 0) return;
 
-      const fractions = [0, 0.25, 0.5, 0.75, 1];
+      const fractions = pickWeatherFractions(durationMin);
       const points: WeatherRequestPoint[] = fractions.map((fraction) => {
         const targetKm = totalKm * fraction;
         let index = distances.findIndex((d) => d >= targetKm);
