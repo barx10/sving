@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { handleRouteRequest } from './route.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { handleNearbyRouteRequest, handleRouteRequest } from './route.js';
 import { handleWeatherRequest } from './weather.js';
 import { handleHazardsRequest } from './hazards.js';
 import { handleGeocodeReverse, handleGeocodeSearch } from './geocode.js';
@@ -36,6 +36,52 @@ describe('handleRouteRequest validation', () => {
       ],
     });
     expect(result.status).toBe(400);
+  });
+});
+
+describe('handleNearbyRouteRequest validation', () => {
+  afterEach(() => {
+    vi.resetModules();
+  });
+
+  it('rejects a missing body', async () => {
+    expect((await handleNearbyRouteRequest(null)).status).toBe(400);
+  });
+
+  it('rejects an invalid position', async () => {
+    const result = await handleNearbyRouteRequest({ lat: 999, lng: 999, radiusKm: 40 });
+    expect(result.status).toBe(400);
+  });
+
+  it('rejects a missing radius', async () => {
+    const result = await handleNearbyRouteRequest({ lat: 62.5, lng: 7.6 });
+    expect(result.status).toBe(400);
+  });
+
+  it('rejects a radius below the minimum', async () => {
+    const result = await handleNearbyRouteRequest({ lat: 62.5, lng: 7.6, radiusKm: 5 });
+    expect(result.status).toBe(400);
+  });
+
+  it('rejects a radius above the maximum', async () => {
+    const result = await handleNearbyRouteRequest({ lat: 62.5, lng: 7.6, radiusKm: 200 });
+    expect(result.status).toBe(400);
+  });
+
+  it('reports the feature as unavailable without a configured ORS key, rather than falling back silently', async () => {
+    // Unlike point-to-point routing, there is no OSRM equivalent for round trips
+    // to fall back to — validation must not be the only thing standing between
+    // a well-formed request and a network call that was always going to fail.
+    vi.resetModules();
+    const previous = process.env.OPENROUTESERVICE_API_KEY;
+    process.env.OPENROUTESERVICE_API_KEY = '';
+    try {
+      const { handleNearbyRouteRequest: handleWithoutKey } = await import('./route.js');
+      const result = await handleWithoutKey({ lat: 62.5, lng: 7.6, radiusKm: 40 });
+      expect(result.status).toBe(503);
+    } finally {
+      process.env.OPENROUTESERVICE_API_KEY = previous;
+    }
   });
 });
 

@@ -14,6 +14,7 @@ import type {
 import {
   ApiError,
   fetchHazards,
+  fetchNearbyRoute,
   fetchRoute,
   fetchWeather,
   reverseGeocode,
@@ -31,6 +32,7 @@ import { ExportModal } from './components/ExportModal';
 import { SavedToursDrawer } from './components/SavedToursDrawer';
 import { PresetRoutesModal } from './components/PresetRoutesModal';
 import { NearbyRouteModal } from './components/NearbyRouteModal';
+import { NearbyLoopModal } from './components/NearbyLoopModal';
 import { NoticeStack } from './components/NoticeStack';
 
 // The charting library is a large share of the bundle and is only needed once a
@@ -84,6 +86,11 @@ export default function App() {
     { preset: PresetRoute; distanceKm: number }[]
   >([]);
   const [userCoords, setUserCoords] = useState<{ lat: number; lng: number } | null>(null);
+
+  const [isLoopModalOpen, setIsLoopModalOpen] = useState(false);
+  const [loopRadiusKm, setLoopRadiusKm] = useState(40);
+  const [isGeneratingLoop, setIsGeneratingLoop] = useState(false);
+  const [loopResult, setLoopResult] = useState<RouteResult | null>(null);
 
   /** Lets a newer route request cancel one still in flight. */
   const routeRequestRef = useRef<AbortController | null>(null);
@@ -376,18 +383,10 @@ export default function App() {
 
     navigator.geolocation.getCurrentPosition(
       (position) => {
-        const coords = { lat: position.coords.latitude, lng: position.coords.longitude };
-        setUserCoords(coords);
-        setNearbySuggestions(
-          PRESET_ROUTES.map((preset) => ({
-            preset,
-            distanceKm: Math.round(
-              haversineDistance(coords.lat, coords.lng, preset.waypoints[0].lat, preset.waypoints[0].lng)
-            ),
-          })).sort((a, b) => a.distanceKm - b.distanceKm)
-        );
+        setUserCoords({ lat: position.coords.latitude, lng: position.coords.longitude });
+        setLoopResult(null);
         setIsSuggestingLocation(false);
-        setIsNearbyModalOpen(true);
+        setIsLoopModalOpen(true);
       },
       (error) => {
         setIsSuggestingLocation(false);
@@ -396,6 +395,52 @@ export default function App() {
       { enableHighAccuracy: true, timeout: 8000 }
     );
   }, [pushNotice]);
+
+  const handleShowPresetsInstead = useCallback(() => {
+    if (!userCoords) return;
+    setNearbySuggestions(
+      PRESET_ROUTES.map((preset) => ({
+        preset,
+        distanceKm: Math.round(
+          haversineDistance(userCoords.lat, userCoords.lng, preset.waypoints[0].lat, preset.waypoints[0].lng)
+        ),
+      })).sort((a, b) => a.distanceKm - b.distanceKm)
+    );
+    setIsLoopModalOpen(false);
+    setIsNearbyModalOpen(true);
+  }, [userCoords]);
+
+  const handleGenerateLoop = useCallback(async () => {
+    if (!userCoords) return;
+
+    setIsGeneratingLoop(true);
+    try {
+      const result = await fetchNearbyRoute(userCoords.lat, userCoords.lng, loopRadiusKm);
+      setLoopResult(result);
+      setRoute(result);
+      setProfile('curvy');
+      setAvoidHighways(true);
+
+      const stamp = Date.now();
+      const loopWaypoints: Waypoint[] = [
+        { id: `loop_start_${stamp}`, name: 'Din posisjon (start)', ...userCoords },
+        { id: `loop_end_${stamp}`, name: 'Din posisjon (slutt)', ...userCoords },
+      ];
+      setWaypoints(loopWaypoints);
+      setNotices((prev) => prev.filter((n) => n.tone !== 'error'));
+
+      const hash = encodeRouteToHash(loopWaypoints, 'curvy', true);
+      if (hash) window.history.replaceState(null, '', hash);
+
+      const departure = new Date(departureTime);
+      void loadWeather(result, loopWaypoints, Number.isNaN(departure.getTime()) ? new Date() : departure);
+    } catch (err) {
+      const message = err instanceof ApiError ? err.message : 'Kunne ikke lage rundtur. Prøv igjen.';
+      pushNotice('error', message);
+    } finally {
+      setIsGeneratingLoop(false);
+    }
+  }, [userCoords, loopRadiusKm, departureTime, loadWeather, pushNotice]);
 
   const handleSaveTour = useCallback(
     async (title: string, notes: string) => {
@@ -564,6 +609,17 @@ export default function App() {
           setIsNearbyModalOpen(false);
           applyPreset(preset, startFromUser);
         }}
+      />
+
+      <NearbyLoopModal
+        isOpen={isLoopModalOpen}
+        onClose={() => setIsLoopModalOpen(false)}
+        radiusKm={loopRadiusKm}
+        onRadiusChange={setLoopRadiusKm}
+        onGenerate={handleGenerateLoop}
+        isGenerating={isGeneratingLoop}
+        result={loopResult}
+        onShowPresetsInstead={handleShowPresetsInstead}
       />
     </div>
   );
