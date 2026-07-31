@@ -8,6 +8,7 @@ import {
   pickBestRoute,
   pickCurviestFeature,
   pickSampleIndices,
+  wantsOrsAlternatives,
 } from './route.js';
 
 /** Builds an OSRM-shaped candidate from a polyline given as [lat, lng] pairs. */
@@ -126,6 +127,38 @@ describe('OpenRouteService profile', () => {
         'wheelchair',
       ]).toContain(profile);
     }
+  });
+});
+
+describe('wantsOrsAlternatives', () => {
+  // Trollstigen -> Valldal, well under ORS's alternative-routes distance cap.
+  const nearby: [number, number][] = [
+    [7.687, 62.567],
+    [7.25, 62.3],
+  ];
+  // Oslo -> Bergen straight line is ~305 km. ORS's public API rejects
+  // alternative_routes with a 400 above 100 km of road distance, and the road
+  // distance for a request like this is always well past that on this corridor
+  // — exactly the long-haul routes the app is meant to help plan.
+  const osloBergen: [number, number][] = [
+    [10.7522, 59.9139],
+    [5.3221, 60.3913],
+  ];
+
+  it('wants alternatives for a short curvy route', () => {
+    expect(wantsOrsAlternatives(nearby, 'curvy')).toBe(true);
+  });
+
+  it('skips alternatives for a route ORS would reject as too long', () => {
+    expect(wantsOrsAlternatives(osloBergen, 'curvy')).toBe(false);
+  });
+
+  it('skips alternatives when the rider wants the fastest route regardless of distance', () => {
+    expect(wantsOrsAlternatives(nearby, 'fastest')).toBe(false);
+  });
+
+  it('skips alternatives for a route with via-points', () => {
+    expect(wantsOrsAlternatives([...nearby, [7.0, 62.1]], 'curvy')).toBe(false);
   });
 });
 

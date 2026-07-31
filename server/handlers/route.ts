@@ -1,7 +1,12 @@
 import { TtlCache } from '../cache.js';
 import { OPENROUTESERVICE_API_KEY } from '../config.js';
 import { UpstreamError, fetchJson } from '../upstream.js';
-import { cumulativeDistancesKm, curvatureDegPerKm, isValidCoord } from '../../src/utils/geo.js';
+import {
+  cumulativeDistancesKm,
+  curvatureDegPerKm,
+  haversineDistance,
+  isValidCoord,
+} from '../../src/utils/geo.js';
 import type { RouteProfile } from '../../src/types.js';
 import { badRequest, type ApiResult } from './apiResult.js';
 
@@ -165,6 +170,26 @@ export function pickCurviestFeature(
   return best;
 }
 
+// ORS's public API caps alternative_routes at 100 km of road distance — asking
+// above that returns a 400. Straight-line distance is the only thing known
+// before routing, so the threshold stays well under 100 km to leave room for
+// how much longer a curvy mountain road runs compared to the straight line
+// between its endpoints.
+const ALTERNATIVES_MAX_STRAIGHT_LINE_KM = 60;
+
+/** ORS only offers alternatives for point-to-point routes, same as OSRM. */
+export function wantsOrsAlternatives(
+  coordinates: [number, number][],
+  profile: RouteProfile
+): boolean {
+  return (
+    profile !== 'fastest' &&
+    coordinates.length === 2 &&
+    haversineDistance(coordinates[0][1], coordinates[0][0], coordinates[1][1], coordinates[1][0]) <=
+      ALTERNATIVES_MAX_STRAIGHT_LINE_KM
+  );
+}
+
 async function routeViaOpenRouteService(
   coordinates: [number, number][],
   profile: RouteProfile,
@@ -187,9 +212,7 @@ async function routeViaOpenRouteService(
     body.options = { avoid_features: ['highways', 'tollways'] };
   }
 
-  // ORS only offers alternatives for point-to-point routes, same as OSRM.
-  const wantsAlternatives = profile !== 'fastest' && coordinates.length === 2;
-  if (wantsAlternatives) {
+  if (wantsOrsAlternatives(coordinates, profile)) {
     body.alternative_routes = { target_count: 3, share_factor: 0.6, weight_factor: 1.6 };
   }
 
