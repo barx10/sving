@@ -43,6 +43,24 @@ Alt settes via miljøvariabler, se [`.env.example`](.env.example). Den viktigste
 kan blokkere trafikk uten. `OPENROUTESERVICE_API_KEY` er valgfri, men gir bedre ruting
 for motorsykkel.
 
+## Drift
+
+Samme kodebase kjører på to måter — logikken bak `/api` ligger i `server/handlers/`
+og deles av begge:
+
+**Vercel (nåværende hosting).** `api/`-mappa blir serverless functions automatisk,
+og `vercel.json` peker bygget på riktig sted (region `arn1`, Stockholm — nærmest
+både brukerne og MET.no). Sett `CONTACT_EMAIL` og eventuelt
+`OPENROUTESERVICE_API_KEY` som miljøvariabler i Vercel-dashbordet. Merk: på
+serverless gjelder minne-cache og Nominatim-strupingen per varm instans, ikke
+globalt — edge-caching på geocoding-svarene demper det, men ved høy trafikk er en
+egen server snillere mot Nominatim.
+
+**Egen server / VPS.** `npm run build && npm start` kjører Express-serveren med
+full cache, global Nominatim-struping og rate limiting per IP. Dette er også
+oppsettet som senere kan få en selv-hostet GraphHopper ved siden av seg (se
+`experiments/graphhopper/`).
+
 ## Om datakildene
 
 Appen skal aldri finne på data. Der en kilde ikke svarer, sier den at den ikke vet,
@@ -65,8 +83,10 @@ fjellovergang kan stenge på timers varsel. Sjekk alltid
 ## Arkitektur
 
 ```
-server/           Express-API. Alt mot eksterne tjenester går herfra, med
-  routes/         identifiserende User-Agent, cache og rate limiting.
+api/              Vercel serverless-innganger — tynne adaptere, én per endepunkt.
+server/
+  handlers/       All API-logikk, vertsnøytral. Delt av api/ og Express.
+  routes/         Tynne Express-adaptere rundt handlers.
 src/              React-klient (Vite, Tailwind, Leaflet, Dexie).
   data/           Kuratert innhold: forhåndsdefinerte ruter, fjelloverganger.
   utils/          Delt logikk, brukt av både klient og server.
