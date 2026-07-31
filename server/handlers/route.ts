@@ -353,47 +353,73 @@ export async function handleNearbyRouteRequest(payload: unknown): Promise<ApiRes
   }
 }
 
+// ORS's round_trip is randomised and, by its own documentation, experimental:
+// the same request with a different seed can fail where another succeeds. This
+// showed up immediately on real terrain — in the narrow road network around a
+// fjord-valley town like Åndalsnes, roughly half of single attempts came back
+// as a plain ORS-side 500, not a request problem on our end. A few retries with
+// a fresh seed each time turns that into a route the rider actually sees.
+const ROUND_TRIP_ATTEMPTS = 4;
+
+/** ORS-side round_trip failures are a 500 with no useful body; anything else is a real problem worth surfacing immediately. */
+export function isRetryableRoundTripFailure(err: unknown): boolean {
+  return err instanceof UpstreamError && err.status === 500;
+}
+
 async function routeViaOrsRoundTrip(
   lat: number,
   lng: number,
   radiusKm: number
 ): Promise<RouteResponse> {
-  const body = {
-    coordinates: [[lng, lat]],
-    elevation: true,
-    instructions: false,
-    options: {
-      avoid_features: ['highways', 'tollways'],
-      round_trip: {
-        length: Math.round(radiusKm * 1000),
-        points: LOOP_ROUND_TRIP_POINTS,
-        // A fresh seed every call is the point: asking again is how a rider gets
-        // a different loop, not a cache hit on the same one.
-        seed: Math.floor(Math.random() * 1_000_000),
+  let lastErr: unknown;
+
+  for (let attempt = 1; attempt <= ROUND_TRIP_ATTEMPTS; attempt++) {
+    const body = {
+      coordinates: [[lng, lat]],
+      elevation: true,
+      instructions: false,
+      options: {
+        avoid_features: ['highways', 'tollways'],
+        round_trip: {
+          length: Math.round(radiusKm * 1000),
+          points: LOOP_ROUND_TRIP_POINTS,
+          // A fresh seed every attempt: asking again is how ORS's own
+          // randomised algorithm gets another chance to find a valid loop.
+          seed: Math.floor(Math.random() * 1_000_000),
+        },
       },
-    },
-  };
+    };
 
-  const data = await fetchJson<OrsResponse>(
-    'OpenRouteService',
-    'https://api.openrouteservice.org/v2/directions/driving-car/geojson',
-    {
-      method: 'POST',
-      body,
-      headers: { Authorization: OPENROUTESERVICE_API_KEY, Accept: 'application/geo+json' },
+    try {
+      const data = await fetchJson<OrsResponse>(
+        'OpenRouteService',
+        'https://api.openrouteservice.org/v2/directions/driving-car/geojson',
+        {
+          method: 'POST',
+          body,
+          headers: { Authorization: OPENROUTESERVICE_API_KEY, Accept: 'application/geo+json' },
+          timeoutMs: 6_000,
+        }
+      );
+
+      const feature = data.features?.[0];
+      if (!feature) {
+        throw new UpstreamError('OpenRouteService', 'Fant ingen rundtur fra denne posisjonen');
+      }
+
+      const response = buildRouteResponseFromOrsFeature(feature);
+      response.notes.push(
+        'Rundturen er generert automatisk og følger ikke nødvendigvis den mest opplagte veien — se over ruten før du kjører.'
+      );
+      return response;
+    } catch (err) {
+      lastErr = err;
+      if (!isRetryableRoundTripFailure(err)) throw err;
+      console.warn(`[route] nearby loop attempt ${attempt}/${ROUND_TRIP_ATTEMPTS} failed, retrying:`, err);
     }
-  );
-
-  const feature = data.features?.[0];
-  if (!feature) {
-    throw new UpstreamError('OpenRouteService', 'Fant ingen rundtur fra denne posisjonen');
   }
 
-  const response = buildRouteResponseFromOrsFeature(feature);
-  response.notes.push(
-    'Rundturen er generert automatisk og følger ikke nødvendigvis den mest opplagte veien — se over ruten før du kjører.'
-  );
-  return response;
+  throw lastErr;
 }
 
 /* -------------------------------------------------------------------------- */

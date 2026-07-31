@@ -5,11 +5,13 @@ import {
   type OrsFeature,
   type OsrmRoute,
   elevationStats,
+  isRetryableRoundTripFailure,
   pickBestRoute,
   pickCurviestFeature,
   pickSampleIndices,
   wantsOrsAlternatives,
 } from './route.js';
+import { UpstreamError } from '../upstream.js';
 
 /** Builds an OSRM-shaped candidate from a polyline given as [lat, lng] pairs. */
 function candidate(
@@ -159,6 +161,33 @@ describe('wantsOrsAlternatives', () => {
 
   it('skips alternatives for a route with via-points', () => {
     expect(wantsOrsAlternatives([...nearby, [7.0, 62.1]], 'curvy')).toBe(false);
+  });
+});
+
+describe('isRetryableRoundTripFailure', () => {
+  // Observed against the real API from Åndalsnes, a narrow fjord-valley road
+  // network: ORS's round_trip algorithm is randomised and genuinely fails
+  // about half the time there with a bare 500, distinct from a real problem.
+  it('retries a bare ORS 500', () => {
+    expect(isRetryableRoundTripFailure(new UpstreamError('OpenRouteService', 'svarte 500', 500))).toBe(
+      true
+    );
+  });
+
+  it('does not retry an auth failure — a fresh seed will not fix a bad key', () => {
+    expect(isRetryableRoundTripFailure(new UpstreamError('OpenRouteService', 'svarte 401', 401))).toBe(
+      false
+    );
+  });
+
+  it('does not retry a rate limit — retrying immediately would only make it worse', () => {
+    expect(isRetryableRoundTripFailure(new UpstreamError('OpenRouteService', 'svarte 429', 429))).toBe(
+      false
+    );
+  });
+
+  it('does not retry an error that never reached ORS', () => {
+    expect(isRetryableRoundTripFailure(new Error('network down'))).toBe(false);
   });
 });
 
