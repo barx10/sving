@@ -196,7 +196,14 @@ async function routeViaOpenRouteService(
   const data = await fetchJson<OrsResponse>(
     'OpenRouteService',
     'https://api.openrouteservice.org/v2/directions/driving-car/geojson',
-    { method: 'POST', body, headers: { Authorization: OPENROUTESERVICE_API_KEY } }
+    {
+      method: 'POST',
+      body,
+      // The /geojson variant only accepts this MIME type; fetchJson's default
+      // Accept: application/json gets a valid, authenticated request rejected
+      // with 406 before ORS even looks at the body.
+      headers: { Authorization: OPENROUTESERVICE_API_KEY, Accept: 'application/geo+json' },
+    }
   );
 
   const feature = pickCurviestFeature(data.features ?? [], profile, avoidHighways);
