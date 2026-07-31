@@ -1,0 +1,6 @@
+# Nedlastede og genererte artefakter — hentes av setup.sh
+*.jar
+*.pbf
+*.log
+graph-cache/
+custom_models/

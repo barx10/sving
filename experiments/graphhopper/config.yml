@@ -1,0 +1,54 @@
+# GraphHopper prototype for Sving: does a curvature-aware motorcycle profile
+# actually produce better routes than what we get today?
+#
+# Two profiles are built so they can be compared on identical requests:
+#   mc_curvy   - GraphHopper's built-in motorcycle model plus its curvature model
+#   car_plain  - an ordinary car route, standing in for what ORS/OSRM give us
+
+graphhopper:
+  datareader.file: norway-latest.osm.pbf
+  graph.location: graph-cache
+  custom_models.directory: custom_models
+
+  # curvature is what makes this experiment possible; the rest are what the
+  # bundled motorcycle model references.
+  graph.encoded_values: car_access, car_average_speed, road_access, road_class, track_type, surface, curvature
+
+  # This graph is only ever queried for motor vehicles, so skipping foot and
+  # cycle ways cuts import time substantially.
+  import.osm.ignored_highways: footway,cycleway,path,pedestrian,steps,bridleway
+
+  profiles:
+    - name: mc_curvy
+      custom_model_files: [motorcycle.json, curvature.json]
+    - name: car_plain
+      custom_model_files: [car.json]
+
+  # Landmarks: much cheaper to prepare than contraction hierarchies, and fast
+  # enough to answer a 300 km query without the multi-second wait of pure
+  # flexible mode.
+  profiles_lm:
+    - profile: mc_curvy
+    - profile: car_plain
+
+  prepare.min_network_size: 200
+  routing.non_ch.max_waypoint_distance: 1000000
+
+server:
+  application_connectors:
+    - type: http
+      port: 8989
+      bind_host: 127.0.0.1
+  admin_connectors:
+    - type: http
+      port: 8990
+      bind_host: 127.0.0.1
+
+logging:
+  level: WARN
+  loggers:
+    com.graphhopper: INFO
+  appenders:
+    - type: console
+      time_zone: UTC
+      log_format: "%d{HH:mm:ss} %-5level %logger{15} - %msg%n"
