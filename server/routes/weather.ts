@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from 'express';
-import { handleWeatherRequest } from '../handlers/weather';
-import { send } from './respond';
+import { handleWeatherRequest } from '../handlers/weather.js';
+import { send } from './respond.js';
 
 export const weatherRouter = Router();
 

@@ -1,5 +1,5 @@
-import { handleGeocodeReverse } from '../../server/handlers/geocode';
-import { toResponse } from '../../server/handlers/apiResult';
+import { handleGeocodeReverse } from '../../server/handlers/geocode.js';
+import { toResponse } from '../../server/handlers/apiResult.js';
 
 export const maxDuration = 15;
 

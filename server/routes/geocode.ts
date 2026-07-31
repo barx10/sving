@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from 'express';
-import { handleGeocodeReverse, handleGeocodeSearch } from '../handlers/geocode';
-import { send } from './respond';
+import { handleGeocodeReverse, handleGeocodeSearch } from '../handlers/geocode.js';
+import { send } from './respond.js';
 
 export const geocodeRouter = Router();
 

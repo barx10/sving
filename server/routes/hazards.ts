@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from 'express';
-import { handleHazardsRequest } from '../handlers/hazards';
-import { send } from './respond';
+import { handleHazardsRequest } from '../handlers/hazards.js';
+import { send } from './respond.js';
 
 export const hazardsRouter = Router();
 

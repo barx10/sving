@@ -2,12 +2,12 @@ import 'dotenv/config';
 
 import express, { type NextFunction, type Request, type Response } from 'express';
 import path from 'path';
-import { IS_PRODUCTION, PORT, TRUST_PROXY, warnAboutMissingConfig } from './config';
-import { rateLimit } from './rateLimit';
-import { geocodeRouter } from './routes/geocode';
-import { hazardsRouter } from './routes/hazards';
-import { routeRouter } from './routes/route';
-import { weatherRouter } from './routes/weather';
+import { IS_PRODUCTION, PORT, TRUST_PROXY, warnAboutMissingConfig } from './config.js';
+import { rateLimit } from './rateLimit.js';
+import { geocodeRouter } from './routes/geocode.js';
+import { hazardsRouter } from './routes/hazards.js';
+import { routeRouter } from './routes/route.js';
+import { weatherRouter } from './routes/weather.js';
 
 const app = express();
 

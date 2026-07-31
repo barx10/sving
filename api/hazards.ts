@@ -1,5 +1,5 @@
-import { handleHazardsRequest } from '../server/handlers/hazards';
-import { toResponse } from '../server/handlers/apiResult';
+import { handleHazardsRequest } from '../server/handlers/hazards.js';
+import { toResponse } from '../server/handlers/apiResult.js';
 
 export function GET(): Response {
   return toResponse(handleHazardsRequest());

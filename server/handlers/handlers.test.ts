@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { handleRouteRequest } from './route';
-import { handleWeatherRequest } from './weather';
-import { handleHazardsRequest } from './hazards';
-import { handleGeocodeReverse, handleGeocodeSearch } from './geocode';
-import { toResponse } from './apiResult';
+import { handleRouteRequest } from './route.js';
+import { handleWeatherRequest } from './weather.js';
+import { handleHazardsRequest } from './hazards.js';
+import { handleGeocodeReverse, handleGeocodeSearch } from './geocode.js';
+import { toResponse } from './apiResult.js';
 
 /**
  * The handlers are the single API surface served by both Express and the

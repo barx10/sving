@@ -1,5 +1,5 @@
 import type { Response } from 'express';
-import type { ApiResult } from '../handlers/apiResult';
+import type { ApiResult } from '../handlers/apiResult.js';
 
 /** Adapter from the host-neutral handler result to an Express response. */
 export function send(res: Response, result: ApiResult): void {

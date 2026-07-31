@@ -1,7 +1,7 @@
-import { TtlCache } from '../cache';
-import { UpstreamError, fetchJson } from '../upstream';
-import { isValidCoord } from '../../src/utils/geo';
-import { badRequest, type ApiResult } from './apiResult';
+import { TtlCache } from '../cache.js';
+import { UpstreamError, fetchJson } from '../upstream.js';
+import { isValidCoord } from '../../src/utils/geo.js';
+import { badRequest, type ApiResult } from './apiResult.js';
 
 /**
  * MET.no forecasts along the route.

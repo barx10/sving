@@ -1,5 +1,5 @@
-import { MOUNTAIN_PASSES, VEGVESEN_STATUS_URL, passStatus } from '../../src/data/mountainPasses';
-import type { ApiResult } from './apiResult';
+import { MOUNTAIN_PASSES, VEGVESEN_STATUS_URL, passStatus } from '../../src/data/mountainPasses.js';
+import type { ApiResult } from './apiResult.js';
 
 /**
  * Seasonal status for the mountain passes that matter to motorcyclists.
