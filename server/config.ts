@@ -21,6 +21,16 @@ export const USER_AGENT = CONTACT
 
 export const OPENROUTESERVICE_API_KEY = process.env.OPENROUTESERVICE_API_KEY || '';
 
+/**
+ * Whether the optional configuration is present, as booleans rather than the
+ * values themselves. /api/health reports these so a deployment can be checked
+ * from outside without ever exposing the address or the key. Without this,
+ * confirming that an environment variable reached the functions means trusting
+ * the dashboard — the endpoints behave identically either way.
+ */
+export const HAS_CONTACT = CONTACT !== '';
+export const HAS_ROUTING_KEY = OPENROUTESERVICE_API_KEY !== '';
+
 /** Behind a load balancer, rate limiting needs the forwarded client IP. */
 export const TRUST_PROXY = process.env.TRUST_PROXY || (IS_PRODUCTION ? '1' : '');
 

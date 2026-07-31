@@ -4,6 +4,9 @@
  * it runs as the Express server (dev, VPS) or on Vercel. The logic lives in
  * server/handlers/, shared by both hosts.
  */
+import { handleHealthRequest } from '../server/handlers/health.js';
+import { toResponse } from '../server/handlers/apiResult.js';
+
 export function GET(): Response {
-  return Response.json({ ok: true });
+  return toResponse(handleHealthRequest());
 }

@@ -3,7 +3,9 @@ import 'dotenv/config';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import path from 'path';
 import { IS_PRODUCTION, PORT, TRUST_PROXY, warnAboutMissingConfig } from './config.js';
+import { handleHealthRequest } from './handlers/health.js';
 import { rateLimit } from './rateLimit.js';
+import { send } from './routes/respond.js';
 import { geocodeRouter } from './routes/geocode.js';
 import { hazardsRouter } from './routes/hazards.js';
 import { routeRouter } from './routes/route.js';
@@ -29,7 +31,7 @@ app.use((_req: Request, res: Response, next: NextFunction) => {
 app.use(express.json({ limit: '64kb' }));
 
 app.get('/api/health', (_req: Request, res: Response) => {
-  res.json({ ok: true });
+  send(res, handleHealthRequest());
 });
 
 /**
