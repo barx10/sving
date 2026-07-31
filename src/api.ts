@@ -54,6 +54,25 @@ export function fetchRoute(
   });
 }
 
+/**
+ * A scenic loop back to the given position. The server picks a fresh random
+ * shape each call, so calling this again with the same arguments is how a
+ * rider asks for a different loop, not a duplicate request.
+ */
+export function fetchNearbyRoute(
+  lat: number,
+  lng: number,
+  radiusKm: number,
+  signal?: AbortSignal
+): Promise<RouteResult> {
+  return requestJson<RouteResult>('/api/route-nearby', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ lat, lng, radiusKm }),
+    signal,
+  });
+}
+
 export interface WeatherRequestPoint {
   lat: number;
   lng: number;

@@ -9,6 +9,7 @@ import { send } from './routes/respond.js';
 import { geocodeRouter } from './routes/geocode.js';
 import { hazardsRouter } from './routes/hazards.js';
 import { routeRouter } from './routes/route.js';
+import { routeNearbyRouter } from './routes/routeNearby.js';
 import { weatherRouter } from './routes/weather.js';
 
 const app = express();
@@ -49,6 +50,7 @@ app.use(
 );
 
 app.use('/api/route', routeRouter);
+app.use('/api/route-nearby', routeNearbyRouter);
 app.use('/api/weather', weatherRouter);
 app.use('/api/hazards', hazardsRouter);
 app.use('/api/geocode', geocodeRouter);

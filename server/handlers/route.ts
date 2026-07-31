@@ -234,6 +234,11 @@ async function routeViaOpenRouteService(
     throw new UpstreamError('OpenRouteService', 'Fant ingen rute mellom de valgte punktene');
   }
 
+  return buildRouteResponseFromOrsFeature(feature);
+}
+
+/** Shared by point-to-point ORS routing and the round-trip loop generator below. */
+function buildRouteResponseFromOrsFeature(feature: OrsFeature): RouteResponse {
   // ORS returns [lng, lat, elevation] when elevation is requested.
   const coords = feature.geometry.coordinates;
   const polyline: [number, number][] = coords.map((c) => [c[1], c[0]]);
@@ -279,6 +284,116 @@ async function routeViaOpenRouteService(
     },
     notes: buildNotes(elevations !== null),
   };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Nearby loop (round trip)                                                    */
+/* -------------------------------------------------------------------------- */
+
+// ORS's public API restricts round_trip requests to roughly 100-150 km of road
+// distance, and straight-line "radius" isn't the same number the API enforces.
+// The cap here stays well under that so a curvy detour doesn't push the actual
+// loop length past what ORS will accept.
+const LOOP_MIN_RADIUS_KM = 10;
+const LOOP_MAX_RADIUS_KM = 80;
+
+// ORS's own documented example for round_trip.points is 5 ("larger values create
+// more circular routes"). There's no local way to test alternatives against the
+// real API, so this stays at the documented default rather than a guessed curve.
+const LOOP_ROUND_TRIP_POINTS = 5;
+
+interface NearbyRouteRequestBody {
+  lat?: number;
+  lng?: number;
+  radiusKm?: number;
+}
+
+/**
+ * Generates a scenic loop back to the rider's own position — ORS's round_trip
+ * option. OSRM's public instance has no equivalent, so unlike point-to-point
+ * routing there is no fallback: without a configured key this whole feature is
+ * unavailable, and says so rather than returning something that looks like a
+ * route but isn't.
+ */
+export async function handleNearbyRouteRequest(payload: unknown): Promise<ApiResult> {
+  const { lat, lng, radiusKm } = (payload ?? {}) as NearbyRouteRequestBody;
+
+  if (typeof lat !== 'number' || typeof lng !== 'number' || !isValidCoord(lat, lng)) {
+    return badRequest('Ugyldig eller manglende posisjon.');
+  }
+
+  if (typeof radiusKm !== 'number' || !Number.isFinite(radiusKm)) {
+    return badRequest('Radius mangler eller er ugyldig.');
+  }
+
+  if (radiusKm < LOOP_MIN_RADIUS_KM || radiusKm > LOOP_MAX_RADIUS_KM) {
+    return badRequest(`Radius må være mellom ${LOOP_MIN_RADIUS_KM} og ${LOOP_MAX_RADIUS_KM} km.`);
+  }
+
+  if (!OPENROUTESERVICE_API_KEY) {
+    return {
+      status: 503,
+      body: {
+        error:
+          'Rundturer krever en konfigurert OpenRouteService-nøkkel. OSRM har ingen tilsvarende funksjon.',
+      },
+    };
+  }
+
+  try {
+    const result = await routeViaOrsRoundTrip(lat, lng, radiusKm);
+    return { status: 200, body: result };
+  } catch (err) {
+    if (err instanceof UpstreamError) {
+      console.warn(`[route] nearby loop: ${err.message}`);
+      return { status: 502, body: { error: `Kunne ikke lage rundtur: ${err.message}` } };
+    }
+    console.error('[route] nearby loop unexpected error:', err);
+    return { status: 500, body: { error: 'Kunne ikke lage rundtur.' } };
+  }
+}
+
+async function routeViaOrsRoundTrip(
+  lat: number,
+  lng: number,
+  radiusKm: number
+): Promise<RouteResponse> {
+  const body = {
+    coordinates: [[lng, lat]],
+    elevation: true,
+    instructions: false,
+    options: {
+      avoid_features: ['highways', 'tollways'],
+      round_trip: {
+        length: Math.round(radiusKm * 1000),
+        points: LOOP_ROUND_TRIP_POINTS,
+        // A fresh seed every call is the point: asking again is how a rider gets
+        // a different loop, not a cache hit on the same one.
+        seed: Math.floor(Math.random() * 1_000_000),
+      },
+    },
+  };
+
+  const data = await fetchJson<OrsResponse>(
+    'OpenRouteService',
+    'https://api.openrouteservice.org/v2/directions/driving-car/geojson',
+    {
+      method: 'POST',
+      body,
+      headers: { Authorization: OPENROUTESERVICE_API_KEY, Accept: 'application/geo+json' },
+    }
+  );
+
+  const feature = data.features?.[0];
+  if (!feature) {
+    throw new UpstreamError('OpenRouteService', 'Fant ingen rundtur fra denne posisjonen');
+  }
+
+  const response = buildRouteResponseFromOrsFeature(feature);
+  response.notes.push(
+    'Rundturen er generert automatisk og følger ikke nødvendigvis den mest opplagte veien — se over ruten før du kjører.'
+  );
+  return response;
 }
 
 /* -------------------------------------------------------------------------- */
