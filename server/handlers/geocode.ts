@@ -1,7 +1,7 @@
-import { TtlCache } from '../cache';
-import { UpstreamError, createThrottle, fetchJson } from '../upstream';
-import { isValidCoord } from '../../src/utils/geo';
-import { badRequest, type ApiResult } from './apiResult';
+import { TtlCache } from '../cache.js';
+import { UpstreamError, createThrottle, fetchJson } from '../upstream.js';
+import { isValidCoord } from '../../src/utils/geo.js';
+import { badRequest, type ApiResult } from './apiResult.js';
 
 /**
  * Nominatim proxy.

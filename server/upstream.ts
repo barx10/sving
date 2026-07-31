@@ -1,4 +1,4 @@
-import { USER_AGENT } from './config';
+import { USER_AGENT } from './config.js';
 
 /** Nothing upstream is allowed to hang a request forever. */
 const DEFAULT_TIMEOUT_MS = 10_000;

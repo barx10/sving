@@ -1,9 +1,9 @@
-import { TtlCache } from '../cache';
-import { OPENROUTESERVICE_API_KEY } from '../config';
-import { UpstreamError, fetchJson } from '../upstream';
-import { cumulativeDistancesKm, curvatureDegPerKm, isValidCoord } from '../../src/utils/geo';
-import type { RouteProfile } from '../../src/types';
-import { badRequest, type ApiResult } from './apiResult';
+import { TtlCache } from '../cache.js';
+import { OPENROUTESERVICE_API_KEY } from '../config.js';
+import { UpstreamError, fetchJson } from '../upstream.js';
+import { cumulativeDistancesKm, curvatureDegPerKm, isValidCoord } from '../../src/utils/geo.js';
+import type { RouteProfile } from '../../src/types.js';
+import { badRequest, type ApiResult } from './apiResult.js';
 
 /** Roads do not change hour to hour; identical requests can share a result. */
 const routeCache = new TtlCache<RouteResponse>(60 * 60 * 1000, 200);

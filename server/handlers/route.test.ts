@@ -8,7 +8,7 @@ import {
   pickBestRoute,
   pickCurviestFeature,
   pickSampleIndices,
-} from './route';
+} from './route.js';
 
 /** Builds an OSRM-shaped candidate from a polyline given as [lat, lng] pairs. */
 function candidate(

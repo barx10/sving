@@ -1,5 +1,5 @@
-import { handleRouteRequest } from '../server/handlers/route';
-import { toResponse } from '../server/handlers/apiResult';
+import { handleRouteRequest } from '../server/handlers/route.js';
+import { toResponse } from '../server/handlers/apiResult.js';
 
 // Route calculation can chain ORS -> OSRM -> two elevation providers, each
 // with its own timeout, so this needs more than Vercel's 10 s default.

@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from 'express';
-import { handleRouteRequest } from '../handlers/route';
-import { send } from './respond';
+import { handleRouteRequest } from '../handlers/route.js';
+import { send } from './respond.js';
 
 export const routeRouter = Router();
 

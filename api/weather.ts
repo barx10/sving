@@ -1,5 +1,5 @@
-import { handleWeatherRequest } from '../server/handlers/weather';
-import { toResponse } from '../server/handlers/apiResult';
+import { handleWeatherRequest } from '../server/handlers/weather.js';
+import { toResponse } from '../server/handlers/apiResult.js';
 
 // Up to twelve MET.no lookups per request on a cold instance.
 export const maxDuration = 30;
