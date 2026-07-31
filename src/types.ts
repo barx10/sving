@@ -11,9 +11,12 @@ export type RouteProfile = 'curvy' | 'scenic' | 'fastest';
 export interface RouteSummary {
   distanceKm: number;
   durationMin: number;
-  elevationGainM: number;
-  elevationLossM: number;
-  maxElevationM: number;
+  /** Null when no elevation provider was reachable. Never a fabricated value. */
+  elevationGainM: number | null;
+  elevationLossM: number | null;
+  maxElevationM: number | null;
+  /** Degrees of heading change per kilometre — how twisty the route actually is. */
+  curvatureDegPerKm: number;
 }
 
 export interface ElevationPoint {
@@ -23,27 +26,69 @@ export interface ElevationPoint {
   lng: number;
 }
 
-export interface WeatherPoint {
+export interface RouteSources {
+  routing: string;
+  elevation: string | null;
+}
+
+export interface RouteResult {
+  polyline: [number, number][];
+  distanceKm: number;
+  durationMin: number;
+  elevationPoints: ElevationPoint[];
+  summary: RouteSummary;
+  sources: RouteSources;
+  notes: string[];
+}
+
+export type RidingCondition = 'good' | 'fair' | 'poor';
+
+export interface Forecast {
+  /** The forecast hour actually used, which may differ from the one requested. */
+  time: string;
+  requestedTime: string;
+  /** True when the nearest available forecast hour was more than three hours off. */
+  approximate: boolean;
+  tempC: number | null;
+  windSpeedMs: number | null;
+  windGustMs: number | null;
+  precipitationMm: number | null;
+  symbolCode: string | null;
+  condition: RidingCondition;
+  conditionLabel: string;
+}
+
+export interface WeatherCheckpoint {
   lat: number;
   lng: number;
   locationName: string;
-  temp: number;
-  symbolCode: string;
-  windSpeed: number;
-  precipitation: number;
-  time: string;
+  /** Null when MET.no could not be reached — the UI must say so, not guess. */
+  forecast: Forecast | null;
+  error: string | null;
 }
 
-export interface RoadHazard {
+export type PassStatus = 'open' | 'closed_seasonal' | 'uncertain';
+
+export interface MountainPassStatus {
   id: string;
   name: string;
-  type: 'mountain_pass' | 'construction' | 'closure' | 'weather_alert';
-  status: 'closed' | 'open' | 'restricted' | 'warning';
+  road: string;
   description: string;
   lat: number;
   lng: number;
-  updated: string;
-  isSeasonal?: boolean;
+  summitM?: number;
+  note?: string;
+  status: PassStatus;
+  statusLabel: string;
+  statusDetail: string;
+}
+
+export interface HazardReport {
+  passes: MountainPassStatus[];
+  dataSource: string;
+  disclaimer: string;
+  verifyUrl: string;
+  generatedAt: string;
 }
 
 export interface SavedTour {
@@ -56,8 +101,8 @@ export interface SavedTour {
   avoidHighways?: boolean;
   distanceKm: number;
   durationMin: number;
-  elevationGainM: number;
-  maxElevationM?: number;
+  elevationGainM?: number | null;
+  maxElevationM?: number | null;
 }
 
 export interface PresetRoute {
@@ -69,4 +114,11 @@ export interface PresetRoute {
   estimatedHours: number;
   highlights: string[];
   waypoints: { name: string; lat: number; lng: number }[];
+}
+
+/** A non-blocking message shown in the app instead of a native alert(). */
+export interface Notice {
+  id: string;
+  tone: 'error' | 'info';
+  message: string;
 }

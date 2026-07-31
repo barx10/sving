@@ -1,74 +1,123 @@
-import React from 'react';
-import type { RoadHazard } from '../types';
-import { AlertTriangle, ShieldCheck, Mountain, CheckCircle2 } from 'lucide-react';
+import React, { useState } from 'react';
+import type { HazardReport, MountainPassStatus, PassStatus } from '../types';
+import { AlertTriangle, CheckCircle2, ChevronDown, ExternalLink, HelpCircle, Mountain } from 'lucide-react';
 
 interface HazardBannerProps {
-  hazards: RoadHazard[];
+  report: HazardReport | null;
 }
 
-export const HazardBanner: React.FC<HazardBannerProps> = ({ hazards }) => {
-  if (!hazards || hazards.length === 0) return null;
+const STATUS_CHIP: Record<PassStatus, string> = {
+  open: 'bg-[#E9EDC9] text-[#386641] border-[#CCD5AE]',
+  uncertain: 'bg-amber-50 text-amber-800 border-amber-200',
+  closed_seasonal: 'bg-rose-50 text-[#BC4749] border-rose-200',
+};
 
-  const closedPasses = hazards.filter((h) => h.status === 'closed');
+const StatusIcon: React.FC<{ status: PassStatus }> = ({ status }) => {
+  if (status === 'closed_seasonal') return <AlertTriangle className="w-3 h-3" aria-hidden="true" />;
+  if (status === 'uncertain') return <HelpCircle className="w-3 h-3" aria-hidden="true" />;
+  return <CheckCircle2 className="w-3 h-3" aria-hidden="true" />;
+};
+
+/**
+ * Seasonal status for the mountain passes.
+ *
+ * The wording matters here. This data is a calendar model, not a live feed from
+ * Statens vegvesen, and the UI must not imply otherwise — a rider who trusts a
+ * green chip in October and finds a locked gate at 1400 metres has been let down
+ * by this app. Every view carries the provenance and a link to the real source.
+ */
+export const HazardBanner: React.FC<HazardBannerProps> = ({ report }) => {
+  const [isExpanded, setIsExpanded] = useState(false);
+
+  if (!report || report.passes.length === 0) return null;
+
+  const needsAttention = report.passes.filter((p) => p.status !== 'open');
+  const visiblePasses: MountainPassStatus[] = isExpanded ? report.passes : report.passes.slice(0, 6);
 
   return (
-    <div id="hazard-banner-container" className="space-y-2">
-      {/* Alert for closed mountain passes */}
-      {closedPasses.length > 0 && (
-        <div className="bg-[#BC4749] border border-[#8B3436] rounded-2xl p-4 text-white flex flex-col md:flex-row items-start md:items-center justify-between gap-3 shadow-md">
+    <section className="space-y-2" aria-label="Status for fjelloverganger">
+      {needsAttention.length > 0 && (
+        <div className="bg-white border-l-4 border-l-[#BC4749] border border-[#E0E0D6] rounded-2xl p-4 shadow-sm">
           <div className="flex items-start gap-3">
-            <div className="p-2 rounded-xl bg-white/20 text-white shrink-0 mt-0.5">
+            <div className="p-2 rounded-xl bg-rose-50 text-[#BC4749] shrink-0">
               <AlertTriangle className="w-5 h-5" />
             </div>
-            <div>
-              <h4 className="text-sm font-bold text-white flex items-center gap-2">
-                <span>Advarsel: {closedPasses.length} Stengte Fjelloverganger i Norge</span>
+            <div className="min-w-0">
+              <h4 className="text-sm font-bold">
+                {needsAttention.length} fjelloverganger er normalt stengt eller usikre nå
               </h4>
-              <p className="text-xs text-white/90 mt-0.5">
-                Statens vegvesen melder at følgende fjelloverganger er stengt for trafikk:
-              </p>
+              <p className="text-xs text-[#6B705C] mt-0.5">{report.disclaimer}</p>
               <div className="flex flex-wrap gap-1.5 mt-2">
-                {closedPasses.map((cp) => (
+                {needsAttention.map((pass) => (
                   <span
-                    key={cp.id}
-                    className="px-2.5 py-1 rounded-lg bg-white/20 text-white border border-white/30 text-xs font-bold"
+                    key={pass.id}
+                    title={pass.statusDetail}
+                    className={`px-2.5 py-1 rounded-lg border text-xs font-bold flex items-center gap-1 ${STATUS_CHIP[pass.status]}`}
                   >
-                    ⛔ {cp.name}
+                    <StatusIcon status={pass.status} />
+                    {pass.name}
                   </span>
                 ))}
               </div>
+              <a
+                href={report.verifyUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 mt-2.5 text-xs font-bold text-[#386641] hover:underline"
+              >
+                Sjekk sanntidsstatus hos Statens vegvesen
+                <ExternalLink className="w-3 h-3" />
+              </a>
             </div>
           </div>
         </div>
       )}
 
-      {/* Accordion / status bar of active key mountain passes */}
-      <div className="bg-white border border-[#E0E0D6] rounded-2xl p-3 shadow-sm flex items-center justify-between gap-2 overflow-x-auto scrollbar-none">
-        <div className="flex items-center gap-2 shrink-0 pr-2 border-r border-[#E0E0D6]">
-          <Mountain className="w-4 h-4 text-[#386641]" />
-          <span className="text-xs font-bold text-[#2D332A]">Vegvesen Fjellpass:</span>
+      <div className="bg-white border border-[#E0E0D6] rounded-2xl p-3 shadow-sm space-y-2">
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <span className="flex items-center gap-2 text-xs font-bold">
+            <Mountain className="w-4 h-4 text-[#386641]" />
+            Fjelloverganger – veiledende sesong
+          </span>
+          {report.passes.length > 6 && (
+            <button
+              type="button"
+              onClick={() => setIsExpanded((prev) => !prev)}
+              aria-expanded={isExpanded}
+              className="text-[11px] font-bold text-[#386641] hover:underline flex items-center gap-1"
+            >
+              {isExpanded ? 'Vis færre' : `Vis alle (${report.passes.length})`}
+              <ChevronDown className={`w-3 h-3 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+            </button>
+          )}
         </div>
 
-        <div className="flex items-center gap-2">
-          {hazards.slice(0, 6).map((hz) => (
-            <div
-              key={hz.id}
-              className={`shrink-0 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold border ${
-                hz.status === 'closed'
-                  ? 'bg-rose-50 text-[#BC4749] border-rose-200'
-                  : 'bg-[#E9EDC9] text-[#386641] border-[#CCD5AE]'
-              }`}
+        <ul className="flex flex-wrap gap-2">
+          {visiblePasses.map((pass) => (
+            <li
+              key={pass.id}
+              title={`${pass.road} — ${pass.statusDetail}${pass.note ? ` ${pass.note}` : ''}`}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold border ${STATUS_CHIP[pass.status]}`}
             >
-              {hz.status === 'closed' ? (
-                <AlertTriangle className="w-3 h-3 text-[#BC4749]" />
-              ) : (
-                <CheckCircle2 className="w-3 h-3 text-[#386641]" />
-              )}
-              <span>{hz.name.split(' ')[0]}</span>
-            </div>
+              <StatusIcon status={pass.status} />
+              <span>{pass.name}</span>
+            </li>
           ))}
-        </div>
+        </ul>
+
+        <p className="text-[11px] text-[#6B705C] leading-relaxed">
+          Beregnet fra typiske åpnings- og stengedatoer, ikke sanntidsdata.{' '}
+          <a
+            href={report.verifyUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="font-bold text-[#386641] hover:underline"
+          >
+            Sjekk vegvesen.no før avreise
+          </a>
+          .
+        </p>
       </div>
-    </div>
+    </section>
   );
 };

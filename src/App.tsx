@@ -1,447 +1,455 @@
-import React, { useState, useEffect } from 'react';
+import React, { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from './db';
 import type {
-  Waypoint,
-  RouteProfile,
-  RouteSummary,
-  ElevationPoint,
-  WeatherPoint,
-  RoadHazard,
-  SavedTour,
+  HazardReport,
+  Notice,
   PresetRoute,
+  RouteProfile,
+  RouteResult,
+  SavedTour,
+  WeatherCheckpoint,
+  Waypoint,
 } from './types';
+import {
+  ApiError,
+  fetchHazards,
+  fetchRoute,
+  fetchWeather,
+  reverseGeocode,
+  type WeatherRequestPoint,
+} from './api';
 import { PRESET_ROUTES } from './data/presetRoutes';
-import { haversineDistance } from './utils/geo';
+import { cumulativeDistancesKm, hasCoords, haversineDistance } from './utils/geo';
+import { decodeRouteFromHash, encodeRouteToHash } from './utils/routeLink';
 import { Header } from './components/Header';
 import { RouteEditor } from './components/RouteEditor';
 import { MapView } from './components/MapView';
-import { ElevationChart } from './components/ElevationChart';
 import { WeatherWidget } from './components/WeatherWidget';
 import { HazardBanner } from './components/HazardBanner';
 import { ExportModal } from './components/ExportModal';
 import { SavedToursDrawer } from './components/SavedToursDrawer';
 import { PresetRoutesModal } from './components/PresetRoutesModal';
 import { NearbyRouteModal } from './components/NearbyRouteModal';
-import { AlertCircle } from 'lucide-react';
+import { NoticeStack } from './components/NoticeStack';
+
+// The charting library is a large share of the bundle and is only needed once a
+// route exists, so it is fetched separately rather than on first paint — this
+// app is opened on mobile data more often than not.
+const ElevationChart = lazy(() =>
+  import('./components/ElevationChart').then((m) => ({ default: m.ElevationChart }))
+);
+
+const emptyWaypoints = (): Waypoint[] => [
+  { id: `wp_start_${Date.now()}`, name: '', lat: 0, lng: 0 },
+  { id: `wp_end_${Date.now() + 1}`, name: '', lat: 0, lng: 0 },
+];
+
+/** Default departure is the next whole hour — nobody sets off at 14:37. */
+function nextWholeHour(): Date {
+  const date = new Date();
+  date.setMinutes(0, 0, 0);
+  date.setHours(date.getHours() + 1);
+  return date;
+}
+
+/** `datetime-local` inputs want local wall-clock time without a timezone. */
+function toDateTimeLocal(date: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(
+    date.getHours()
+  )}:${pad(date.getMinutes())}`;
+}
 
 export default function App() {
-  // Initial waypoints start clean and empty for a smooth user experience
-  const [waypoints, setWaypoints] = useState<Waypoint[]>([
-    { id: 'wp_start', name: '', lat: 0, lng: 0 },
-    { id: 'wp_end', name: '', lat: 0, lng: 0 },
-  ]);
-
+  const [waypoints, setWaypoints] = useState<Waypoint[]>(emptyWaypoints);
   const [profile, setProfile] = useState<RouteProfile>('curvy');
-  const [avoidHighways, setAvoidHighways] = useState<boolean>(true);
-  const [polyline, setPolyline] = useState<[number, number][]>([]);
-  const [elevationPoints, setElevationPoints] = useState<ElevationPoint[]>([]);
-  const [summary, setSummary] = useState<RouteSummary | undefined>(undefined);
-  const [weatherPoints, setWeatherPoints] = useState<WeatherPoint[]>([]);
-  const [hazards, setHazards] = useState<RoadHazard[]>([]);
-  const [isLoadingRoute, setIsLoadingRoute] = useState<boolean>(false);
-  const [isLoadingWeather, setIsLoadingWeather] = useState<boolean>(false);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [avoidHighways, setAvoidHighways] = useState(true);
+  const [departureTime, setDepartureTime] = useState(() => toDateTimeLocal(nextWholeHour()));
 
-  // Modals & Drawers
+  const [route, setRoute] = useState<RouteResult | null>(null);
+  const [weather, setWeather] = useState<WeatherCheckpoint[]>([]);
+  const [hazardReport, setHazardReport] = useState<HazardReport | null>(null);
+
+  const [isLoadingRoute, setIsLoadingRoute] = useState(false);
+  const [isLoadingWeather, setIsLoadingWeather] = useState(false);
+  const [isSuggestingLocation, setIsSuggestingLocation] = useState(false);
+  const [notices, setNotices] = useState<Notice[]>([]);
+
   const [isExportOpen, setIsExportOpen] = useState(false);
   const [isSavedOpen, setIsSavedOpen] = useState(false);
   const [isPresetsOpen, setIsPresetsOpen] = useState(false);
-  
-  // Location Suggestion State
   const [isNearbyModalOpen, setIsNearbyModalOpen] = useState(false);
-  const [isSuggestingLocation, setIsSuggestingLocation] = useState(false);
-  const [nearbySuggestions, setNearbySuggestions] = useState<{ preset: PresetRoute; distanceKm: number }[]>([]);
+  const [nearbySuggestions, setNearbySuggestions] = useState<
+    { preset: PresetRoute; distanceKm: number }[]
+  >([]);
   const [userCoords, setUserCoords] = useState<{ lat: number; lng: number } | null>(null);
 
-  // Live Query from Dexie IndexedDB
+  /** Lets a newer route request cancel one still in flight. */
+  const routeRequestRef = useRef<AbortController | null>(null);
+
   const savedTours = useLiveQuery(() => db.tours.orderBy('createdAt').reverse().toArray()) || [];
 
-  // Handle Profile Selection
-  const handleSetProfile = (p: RouteProfile) => {
-    setProfile(p);
-    if (p === 'curvy' || p === 'scenic') {
-      setAvoidHighways(true);
-    }
-  };
-
-  // Load road hazards on mount (no default pre-filled route)
-  useEffect(() => {
-    fetchHazards();
+  const dismissNotice = useCallback((id: string) => {
+    setNotices((prev) => prev.filter((n) => n.id !== id));
   }, []);
 
-  // Reverse geocoding helper using OSM Nominatim
-  const reverseGeocode = async (lat: number, lng: number): Promise<string> => {
-    try {
-      const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=14`, {
-        headers: {
-          'Accept-Language': 'no,nb,en',
-          'User-Agent': 'SvingMCPlanner/1.0',
-        },
+  const pushNotice = useCallback((tone: Notice['tone'], message: string) => {
+    const id = `notice_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    setNotices((prev) => [...prev.filter((n) => n.message !== message), { id, tone, message }]);
+
+    if (tone === 'info') {
+      setTimeout(() => setNotices((prev) => prev.filter((n) => n.id !== id)), 6000);
+    }
+  }, []);
+
+  /* ---------------------------------------------------------------- */
+  /* Weather                                                           */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * Picks checkpoints along the route and works out roughly when the rider
+   * reaches each one, so the forecast describes the hour they will actually be
+   * there rather than the moment they pressed the button.
+   */
+  const loadWeather = useCallback(
+    async (result: RouteResult, placed: Waypoint[], departure: Date) => {
+      const { polyline, durationMin } = result;
+      if (polyline.length < 2) return;
+
+      const distances = cumulativeDistancesKm(polyline);
+      const totalKm = distances[distances.length - 1];
+      if (totalKm <= 0) return;
+
+      const fractions = [0, 0.25, 0.5, 0.75, 1];
+      const points: WeatherRequestPoint[] = fractions.map((fraction) => {
+        const targetKm = totalKm * fraction;
+        let index = distances.findIndex((d) => d >= targetKm);
+        if (index === -1) index = polyline.length - 1;
+
+        const [lat, lng] = polyline[index];
+        const eta = new Date(departure.getTime() + durationMin * fraction * 60_000);
+
+        return { lat, lng, label: labelForCheckpoint(fraction, lat, lng, placed, targetKm), time: eta.toISOString() };
       });
-      if (res.ok) {
-        const data = await res.json();
-        const addr = data.address;
-        if (addr) {
-          const mainName = addr.village || addr.town || addr.city || addr.municipality || addr.suburb || addr.road;
-          if (mainName) return mainName;
+
+      setIsLoadingWeather(true);
+      try {
+        const { weather: checkpoints } = await fetchWeather(points);
+        setWeather(checkpoints);
+
+        if (checkpoints.every((c) => c.forecast === null)) {
+          pushNotice('info', 'Værvarselet er utilgjengelig akkurat nå. Ruten er beregnet uten det.');
         }
-        if (data.display_name) {
-          return data.display_name.split(',')[0];
+      } catch (err) {
+        setWeather([]);
+        console.warn('Weather fetch failed:', err);
+      } finally {
+        setIsLoadingWeather(false);
+      }
+    },
+    [pushNotice]
+  );
+
+  /* ---------------------------------------------------------------- */
+  /* Routing                                                           */
+  /* ---------------------------------------------------------------- */
+
+  const calculateRoute = useCallback(
+    async (
+      currentWaypoints: Waypoint[],
+      currentProfile: RouteProfile,
+      currentAvoidHighways: boolean,
+      currentDeparture: string
+    ) => {
+      const placed = currentWaypoints.filter(hasCoords);
+      if (placed.length < 2) return;
+
+      routeRequestRef.current?.abort();
+      const controller = new AbortController();
+      routeRequestRef.current = controller;
+
+      setIsLoadingRoute(true);
+
+      try {
+        const result = await fetchRoute(placed, currentProfile, currentAvoidHighways, controller.signal);
+        if (controller.signal.aborted) return;
+
+        setRoute(result);
+        setNotices((prev) => prev.filter((n) => n.tone !== 'error'));
+
+        // Keep the address bar in sync so the rider can just copy the URL.
+        const hash = encodeRouteToHash(placed, currentProfile, currentAvoidHighways);
+        if (hash) window.history.replaceState(null, '', hash);
+
+        const departure = new Date(currentDeparture);
+        void loadWeather(result, placed, Number.isNaN(departure.getTime()) ? new Date() : departure);
+      } catch (err) {
+        if (controller.signal.aborted) return;
+        const message =
+          err instanceof ApiError ? err.message : 'Kunne ikke beregne MC-rute. Prøv igjen.';
+        pushNotice('error', message);
+      } finally {
+        if (routeRequestRef.current === controller) {
+          setIsLoadingRoute(false);
+          routeRequestRef.current = null;
         }
       }
+    },
+    [loadWeather, pushNotice]
+  );
+
+  /* ---------------------------------------------------------------- */
+  /* Startup: shared link + mountain pass status                       */
+  /* ---------------------------------------------------------------- */
+
+  useEffect(() => {
+    fetchHazards()
+      .then(setHazardReport)
+      .catch((err) => console.warn('Failed to load mountain pass status:', err));
+  }, []);
+
+  const loadSharedRoute = useCallback(() => {
+    const shared = decodeRouteFromHash(window.location.hash);
+    if (!shared) return;
+
+    setWaypoints(shared.waypoints);
+    setProfile(shared.profile);
+    setAvoidHighways(shared.avoidHighways);
+    pushNotice('info', 'Delt rute lastet inn.');
+    void calculateRoute(
+      shared.waypoints,
+      shared.profile,
+      shared.avoidHighways,
+      toDateTimeLocal(nextWholeHour())
+    );
+  }, [calculateRoute, pushNotice]);
+
+  useEffect(() => {
+    loadSharedRoute();
+
+    // Opening a shared link while the app is already running only changes the
+    // hash, which does not remount anything — without this, the rider would
+    // click a mate's route and watch nothing happen. Our own replaceState calls
+    // do not fire this event.
+    window.addEventListener('hashchange', loadSharedRoute);
+    return () => window.removeEventListener('hashchange', loadSharedRoute);
+    // Deliberately mount-only: re-running this on every render of
+    // loadSharedRoute would reload the shared route mid-edit.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /* ---------------------------------------------------------------- */
+  /* Waypoint editing                                                  */
+  /* ---------------------------------------------------------------- */
+
+  const nameWaypointFromCoords = useCallback(async (id: string, lat: number, lng: number) => {
+    try {
+      const name = await reverseGeocode(lat, lng);
+      if (!name) return;
+      setWaypoints((prev) => prev.map((wp) => (wp.id === id ? { ...wp, name } : wp)));
     } catch {
-      // Ignore network errors
+      // A missing place name is cosmetic; the coordinates already work.
     }
-    return `Kartpunkt (${lat.toFixed(3)}, ${lng.toFixed(3)})`;
-  };
+  }, []);
 
-  // Handle direct click on map to set start, via, or destination point
-  const handleMapClick = async (lat: number, lng: number) => {
-    const emptyIndex = waypoints.findIndex((wp) => wp.lat === 0 || wp.lng === 0);
-    let updatedWps: Waypoint[] = [...waypoints];
-    const initialName = `Henter sted... (${lat.toFixed(3)}, ${lng.toFixed(3)})`;
+  const handleMapClick = useCallback(
+    (lat: number, lng: number) => {
+      const placeholder = `Kartpunkt (${lat.toFixed(3)}, ${lng.toFixed(3)})`;
 
-    if (emptyIndex !== -1) {
-      // Fill the first empty waypoint input field
-      const targetWp = updatedWps[emptyIndex];
-      const updatedItem: Waypoint = {
-        ...targetWp,
-        lat,
-        lng,
-        name: initialName,
-      };
-      updatedWps[emptyIndex] = updatedItem;
-      setWaypoints([...updatedWps]);
+      // Build the next list synchronously so the route request below always
+      // sees exactly what the user just placed, even on rapid clicks.
+      const emptyIndex = waypoints.findIndex((wp) => !hasCoords(wp));
+      let next: Waypoint[];
+      let targetId: string;
 
-      // Fetch place name in background
-      const realName = await reverseGeocode(lat, lng);
-      setWaypoints((prev) =>
-        prev.map((item, idx) => (idx === emptyIndex ? { ...item, name: realName } : item))
-      );
-      updatedWps[emptyIndex] = { ...updatedItem, name: realName };
-    } else {
-      // All current waypoints are filled -> Insert a new via point before destination
-      const newWp: Waypoint = {
-        id: `wp_map_${Date.now()}`,
-        name: initialName,
-        lat,
-        lng,
-      };
-      if (updatedWps.length >= 2) {
-        const insertIndex = updatedWps.length - 1;
-        updatedWps.splice(insertIndex, 0, newWp);
+      if (emptyIndex !== -1) {
+        targetId = waypoints[emptyIndex].id;
+        next = waypoints.map((wp, idx) =>
+          idx === emptyIndex ? { ...wp, lat, lng, name: placeholder } : wp
+        );
       } else {
-        updatedWps.push(newWp);
+        targetId = `wp_map_${Date.now()}`;
+        const newWaypoint: Waypoint = { id: targetId, name: placeholder, lat, lng };
+        next = [...waypoints];
+        next.splice(Math.max(1, next.length - 1), 0, newWaypoint);
       }
-      setWaypoints([...updatedWps]);
 
-      // Fetch place name in background
-      const realName = await reverseGeocode(lat, lng);
-      setWaypoints((prev) =>
-        prev.map((item) => (item.id === newWp.id ? { ...item, name: realName } : item))
-      );
-      updatedWps = updatedWps.map((item) => (item.id === newWp.id ? { ...item, name: realName } : item));
-    }
+      setWaypoints(next);
+      void nameWaypointFromCoords(targetId, lat, lng);
 
-    // Auto-calculate route if at least 2 waypoints have valid coordinates
-    const validCount = updatedWps.filter((wp) => wp.lat !== 0 || wp.lng !== 0).length;
-    if (validCount >= 2) {
-      calculateRoute(updatedWps, profile, avoidHighways);
-    }
-  };
+      if (next.filter(hasCoords).length >= 2) {
+        void calculateRoute(next, profile, avoidHighways, departureTime);
+      }
+    },
+    [waypoints, profile, avoidHighways, departureTime, calculateRoute, nameWaypointFromCoords]
+  );
 
-  // Clear route back to 2 clean empty input fields
-  const handleClearWaypoints = () => {
-    setWaypoints([
-      { id: `wp_start_${Date.now()}`, name: '', lat: 0, lng: 0 },
-      { id: `wp_end_${Date.now()}`, name: '', lat: 0, lng: 0 },
-    ]);
-    setPolyline([]);
-    setElevationPoints([]);
-    setSummary(undefined);
-    setWeatherPoints([]);
-    setErrorMessage(null);
-  };
+  const handleClearWaypoints = useCallback(() => {
+    routeRequestRef.current?.abort();
+    setWaypoints(emptyWaypoints());
+    setRoute(null);
+    setWeather([]);
+    setNotices([]);
+    window.history.replaceState(null, '', window.location.pathname + window.location.search);
+  }, []);
 
-  // Convert current route to a round trip ending at start location
-  const handleMakeRoundTrip = () => {
-    const validWps = waypoints.filter((wp) => wp.lat !== 0 || wp.lng !== 0);
-    if (validWps.length === 0) {
-      alert('Vennligst oppgi et startsted i kartet eller søkefeltet først for å lage en rundtur.');
+  const handleSetProfile = useCallback((next: RouteProfile) => {
+    setProfile(next);
+    if (next !== 'fastest') setAvoidHighways(true);
+  }, []);
+
+  const handleMakeRoundTrip = useCallback(() => {
+    const placed = waypoints.filter(hasCoords);
+    if (placed.length === 0) {
+      pushNotice('error', 'Sett et startsted i kartet eller søkefeltet før du lager en rundtur.');
       return;
     }
 
-    const startWp = validWps[0];
-    const endWpName = startWp.name ? `${startWp.name} (Retur)` : 'Startsted (Retur)';
-
-    // Check if the route already ends at the start location
-    const lastValid = validWps[validWps.length - 1];
+    const start = placed[0];
+    const last = placed[placed.length - 1];
     if (
-      validWps.length > 1 &&
-      Math.abs(lastValid.lat - startWp.lat) < 0.0001 &&
-      Math.abs(lastValid.lng - startWp.lng) < 0.0001
+      placed.length > 1 &&
+      Math.abs(last.lat - start.lat) < 0.0001 &&
+      Math.abs(last.lng - start.lng) < 0.0001
     ) {
-      alert('Ruten slutter allerede på samme sted som den startet (rundtur).');
+      pushNotice('info', 'Ruten slutter allerede der den startet.');
       return;
     }
 
-    const endWp: Waypoint = {
+    const returnWaypoint: Waypoint = {
       id: `wp_round_${Date.now()}`,
-      name: endWpName,
-      lat: startWp.lat,
-      lng: startWp.lng,
+      name: start.name ? `${start.name} (retur)` : 'Startsted (retur)',
+      lat: start.lat,
+      lng: start.lng,
     };
 
-    let updated: Waypoint[] = [];
     const lastIndex = waypoints.length - 1;
+    const next =
+      lastIndex > 0 && !hasCoords(waypoints[lastIndex])
+        ? waypoints.map((wp, idx) => (idx === lastIndex ? returnWaypoint : wp))
+        : [...waypoints, returnWaypoint];
 
-    // If the last waypoint input in the form is empty, replace it with the retur point
-    if (lastIndex > 0 && waypoints[lastIndex].lat === 0 && waypoints[lastIndex].lng === 0) {
-      updated = waypoints.map((wp, idx) => (idx === lastIndex ? endWp : wp));
-    } else {
-      updated = [...waypoints, endWp];
+    setWaypoints(next);
+    if (next.filter(hasCoords).length >= 2) {
+      void calculateRoute(next, profile, avoidHighways, departureTime);
     }
+  }, [waypoints, profile, avoidHighways, departureTime, calculateRoute, pushNotice]);
 
-    setWaypoints(updated);
+  /* ---------------------------------------------------------------- */
+  /* Presets, geolocation and saved tours                              */
+  /* ---------------------------------------------------------------- */
 
-    const validCount = updated.filter((wp) => wp.lat !== 0 || wp.lng !== 0).length;
-    if (validCount >= 2) {
-      calculateRoute(updated, profile, avoidHighways);
-    }
-  };
+  const applyPreset = useCallback(
+    (preset: PresetRoute, startFromUser: boolean) => {
+      const stamp = Date.now();
+      const presetWaypoints: Waypoint[] = preset.waypoints.map((wp, idx) => ({
+        id: `preset_wp_${idx}_${stamp}`,
+        name: wp.name,
+        lat: wp.lat,
+        lng: wp.lng,
+      }));
 
-  // Trigger GPS Geolocation and suggest closest preset MC routes
-  const handleSuggestNearby = () => {
+      const next =
+        startFromUser && userCoords
+          ? [
+              { id: `wp_user_${stamp}`, name: 'Min posisjon', ...userCoords },
+              ...presetWaypoints.slice(1),
+            ]
+          : presetWaypoints;
+
+      setWaypoints(next);
+      setProfile('curvy');
+      setAvoidHighways(true);
+      void calculateRoute(next, 'curvy', true, departureTime);
+    },
+    [userCoords, departureTime, calculateRoute]
+  );
+
+  const handleSuggestNearby = useCallback(() => {
     if (!navigator.geolocation) {
-      alert('Geolokasjon støttes ikke i denne nettleseren.');
+      pushNotice('error', 'Geolokasjon støttes ikke i denne nettleseren.');
       return;
     }
 
     setIsSuggestingLocation(true);
-    setErrorMessage(null);
 
     navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        const uLat = pos.coords.latitude;
-        const uLng = pos.coords.longitude;
-        setUserCoords({ lat: uLat, lng: uLng });
-
-        // Calculate distance to starting waypoint of each curated route
-        const sorted = PRESET_ROUTES.map((preset) => {
-          const startWp = preset.waypoints[0];
-          const dist = haversineDistance(uLat, uLng, startWp.lat, startWp.lng);
-          return { preset, distanceKm: Math.round(dist) };
-        }).sort((a, b) => a.distanceKm - b.distanceKm);
-
-        setNearbySuggestions(sorted);
+      (position) => {
+        const coords = { lat: position.coords.latitude, lng: position.coords.longitude };
+        setUserCoords(coords);
+        setNearbySuggestions(
+          PRESET_ROUTES.map((preset) => ({
+            preset,
+            distanceKm: Math.round(
+              haversineDistance(coords.lat, coords.lng, preset.waypoints[0].lat, preset.waypoints[0].lng)
+            ),
+          })).sort((a, b) => a.distanceKm - b.distanceKm)
+        );
         setIsSuggestingLocation(false);
         setIsNearbyModalOpen(true);
       },
-      (err) => {
+      (error) => {
         setIsSuggestingLocation(false);
-        alert('Kunne ikke hente posisjon: ' + err.message + '. Vennligst tillat stedsgang i nettleseren.');
+        pushNotice('error', `Kunne ikke hente posisjon: ${error.message}. Tillat posisjon i nettleseren.`);
       },
       { enableHighAccuracy: true, timeout: 8000 }
     );
-  };
+  }, [pushNotice]);
 
-  // Handle selecting a suggested nearby route
-  const handleSelectNearbyRoute = (preset: PresetRoute, setStartToUserPos: boolean) => {
-    setIsNearbyModalOpen(false);
-
-    let newWps: Waypoint[] = [];
-    if (setStartToUserPos && userCoords) {
-      const userStartWp: Waypoint = {
-        id: `wp_user_${Date.now()}`,
-        name: 'Min Posisjon 📍',
-        lat: userCoords.lat,
-        lng: userCoords.lng,
+  const handleSaveTour = useCallback(
+    async (title: string, notes: string) => {
+      if (!route) return;
+      const tour: SavedTour = {
+        id: `tour_${Date.now()}`,
+        title,
+        notes,
+        createdAt: new Date().toISOString(),
+        waypoints: waypoints.filter(hasCoords),
+        profile,
+        avoidHighways,
+        distanceKm: route.summary.distanceKm,
+        durationMin: route.summary.durationMin,
+        elevationGainM: route.summary.elevationGainM,
+        maxElevationM: route.summary.maxElevationM,
       };
-      const restWps: Waypoint[] = preset.waypoints.slice(1).map((wp, idx) => ({
-        id: `preset_wp_${idx}_${Date.now()}`,
-        name: wp.name,
-        lat: wp.lat,
-        lng: wp.lng,
-      }));
-      newWps = [userStartWp, ...restWps];
-    } else {
-      newWps = preset.waypoints.map((wp, idx) => ({
-        id: `preset_wp_${idx}_${Date.now()}`,
-        name: wp.name,
-        lat: wp.lat,
-        lng: wp.lng,
-      }));
-    }
+      await db.tours.add(tour);
+    },
+    [route, waypoints, profile, avoidHighways]
+  );
 
-    setWaypoints(newWps);
-    setProfile('curvy');
-    setAvoidHighways(true);
-    calculateRoute(newWps, 'curvy', true);
-  };
+  const handleLoadTour = useCallback(
+    (tour: SavedTour) => {
+      const avoid = tour.avoidHighways ?? tour.profile !== 'fastest';
+      setWaypoints(tour.waypoints);
+      setProfile(tour.profile);
+      setAvoidHighways(avoid);
+      setIsSavedOpen(false);
+      void calculateRoute(tour.waypoints, tour.profile, avoid, departureTime);
+    },
+    [departureTime, calculateRoute]
+  );
 
-  // Fetch Vegvesen mountain passes & hazards
-  const fetchHazards = async () => {
-    try {
-      const res = await fetch('/api/hazards');
-      if (res.ok) {
-        const data = await res.json();
-        setHazards(data.hazards || []);
-      }
-    } catch (err) {
-      console.warn('Failed to load hazards:', err);
-    }
-  };
-
-  // Main Route Calculation Function
-  const calculateRoute = async (
-    currentWaypoints: Waypoint[],
-    currentProfile: RouteProfile,
-    currentAvoidHighways: boolean = avoidHighways
-  ) => {
-    // Filter out unfilled waypoints (lat=0, lng=0)
-    const validWps = (currentWaypoints || []).filter((wp) => wp.lat !== 0 || wp.lng !== 0);
-    if (validWps.length < 2) return;
-
-    setIsLoadingRoute(true);
-    setErrorMessage(null);
-
-    try {
-      const coordinates: [number, number][] = validWps.map((wp) => [wp.lng, wp.lat]);
-
-      const res = await fetch('/api/route', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          coordinates,
-          profile: currentProfile,
-          avoidHighways: currentAvoidHighways,
-        }),
-      });
-
-      if (!res.ok) {
-        const errData = await res.json();
-        throw new Error(errData.error || 'Ruteberegning feilet');
-      }
-
-      const data = await res.json();
-      setPolyline(data.polyline || []);
-      setElevationPoints(data.elevationPoints || []);
-      setSummary(data.summary);
-
-      // Fetch weather forecast along 3-5 checkpoints of the calculated polyline
-      if (data.polyline && data.polyline.length > 0) {
-        fetchWeatherForPolyline(data.polyline, validWps);
-      }
-    } catch (err: any) {
-      console.error('Calculate route error:', err);
-      setErrorMessage(err.message || 'Kunne ikke beregne MC-rute.');
-    } finally {
-      setIsLoadingRoute(false);
-    }
-  };
-
-  // Fetch MET.no weather forecast along route checkpoints
-  const fetchWeatherForPolyline = async (line: [number, number][], wps: Waypoint[]) => {
-    setIsLoadingWeather(true);
-    try {
-      // Pick 3-5 sample points along the route
-      const checkPoints: { lat: number; lng: number; label: string }[] = [];
-
-      // Start point
-      checkPoints.push({
-        lat: wps[0].lat,
-        lng: wps[0].lng,
-        label: wps[0].name,
-      });
-
-      // Mid points
-      if (wps.length > 2) {
-        const midWp = wps[Math.floor(wps.length / 2)];
-        checkPoints.push({ lat: midWp.lat, lng: midWp.lng, label: midWp.name });
-      } else if (line.length > 10) {
-        const midIdx = Math.floor(line.length / 2);
-        checkPoints.push({ lat: line[midIdx][0], lng: line[midIdx][1], label: 'Midtveis' });
-      }
-
-      // End point
-      const lastWp = wps[wps.length - 1];
-      checkPoints.push({
-        lat: lastWp.lat,
-        lng: lastWp.lng,
-        label: lastWp.name,
-      });
-
-      const res = await fetch('/api/weather', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ points: checkPoints }),
-      });
-
-      if (res.ok) {
-        const wxData = await res.json();
-        setWeatherPoints(wxData.weather || []);
-      }
-    } catch (err) {
-      console.warn('Weather fetch error:', err);
-    } finally {
-      setIsLoadingWeather(false);
-    }
-  };
-
-  // Save tour to Dexie IndexedDB
-  const handleSaveTour = async (title: string, notes: string) => {
-    if (!summary) return;
-    const tour: SavedTour = {
-      id: `tour_${Date.now()}`,
-      title,
-      notes,
-      createdAt: new Date().toISOString(),
-      waypoints,
-      profile,
-      avoidHighways,
-      distanceKm: summary.distanceKm,
-      durationMin: summary.durationMin,
-      elevationGainM: summary.elevationGainM,
-      maxElevationM: summary.maxElevationM,
-    };
-    await db.tours.add(tour);
-  };
-
-  // Load tour from Dexie IndexedDB
-  const handleLoadTour = (tour: SavedTour) => {
-    setWaypoints(tour.waypoints);
-    setProfile(tour.profile);
-    const avoid = tour.avoidHighways ?? (tour.profile !== 'fastest');
-    setAvoidHighways(avoid);
-    calculateRoute(tour.waypoints, tour.profile, avoid);
-    setIsSavedOpen(false);
-  };
-
-  // Delete tour from Dexie IndexedDB
-  const handleDeleteTour = async (id: string) => {
+  const handleDeleteTour = useCallback(async (id: string) => {
     await db.tours.delete(id);
-  };
+  }, []);
 
-  // Select Preset Norwegian Scenic Route
-  const handleSelectPreset = (preset: PresetRoute) => {
-    const newWaypoints: Waypoint[] = preset.waypoints.map((wp, idx) => ({
-      id: `preset_wp_${idx}_${Date.now()}`,
-      name: wp.name,
-      lat: wp.lat,
-      lng: wp.lng,
-    }));
+  const handleDepartureChange = useCallback(
+    (next: string) => {
+      setDepartureTime(next);
+      const placed = waypoints.filter(hasCoords);
+      const departure = new Date(next);
+      if (route && placed.length >= 2 && !Number.isNaN(departure.getTime())) {
+        void loadWeather(route, placed, departure);
+      }
+    },
+    [route, waypoints, loadWeather]
+  );
 
-    setWaypoints(newWaypoints);
-    setProfile('curvy');
-    setAvoidHighways(true);
-    calculateRoute(newWaypoints, 'curvy', true);
-    setIsPresetsOpen(false);
-  };
+  const polyline = route?.polyline ?? [];
 
   return (
     <div className="min-h-screen bg-[#F4F4EF] text-[#2D332A] flex flex-col font-sans selection:bg-[#A7C957] selection:text-[#2D332A]">
-      {/* Header Bar */}
       <Header
         onOpenPresets={() => setIsPresetsOpen(true)}
         onOpenSavedTours={() => setIsSavedOpen(true)}
@@ -450,30 +458,12 @@ export default function App() {
         hasRoute={polyline.length > 0}
       />
 
-      {/* Main Container */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-3 sm:p-5 space-y-4">
-        {/* Mountain Pass Warnings Banner (Vises kun når rute er valgt/beregnet) */}
-        {polyline.length > 0 && <HazardBanner hazards={hazards} />}
+        <HazardBanner report={hazardReport} />
 
-        {/* Error Alert */}
-        {errorMessage && (
-          <div className="bg-[#BC4749] border border-[#8B3436] text-white p-4 rounded-2xl flex items-center justify-between gap-3 text-sm shadow-md">
-            <div className="flex items-center gap-2">
-              <AlertCircle className="w-5 h-5 text-white shrink-0" />
-              <span>{errorMessage}</span>
-            </div>
-            <button
-              onClick={() => setErrorMessage(null)}
-              className="text-xs font-bold px-3 py-1 bg-white/20 hover:bg-white/30 rounded-lg text-white transition"
-            >
-              Lukk
-            </button>
-          </div>
-        )}
+        <NoticeStack notices={notices} onDismiss={dismissNotice} />
 
-        {/* Primary Dashboard Grid */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-          {/* Left Column: Route Editor Controls (4 cols on lg) */}
           <div className="lg:col-span-4 space-y-4">
             <RouteEditor
               waypoints={waypoints}
@@ -482,57 +472,71 @@ export default function App() {
               setProfile={handleSetProfile}
               avoidHighways={avoidHighways}
               setAvoidHighways={setAvoidHighways}
-              onCalculateRoute={() => calculateRoute(waypoints, profile, avoidHighways)}
+              departureTime={departureTime}
+              setDepartureTime={handleDepartureChange}
+              onCalculateRoute={() => calculateRoute(waypoints, profile, avoidHighways, departureTime)}
               onClearWaypoints={handleClearWaypoints}
               onMakeRoundTrip={handleMakeRoundTrip}
               onSuggestNearby={handleSuggestNearby}
+              onNotify={pushNotice}
               isSuggestingLocation={isSuggestingLocation}
               isLoading={isLoadingRoute}
             />
           </div>
 
-          {/* Right Column: Interactive Map & Elevation Profile (8 cols on lg) */}
           <div className="lg:col-span-8 space-y-4 flex flex-col">
-            {/* Interactive Leaflet Map */}
             <div className="h-[420px] sm:h-[480px] w-full">
               <MapView
                 polyline={polyline}
                 waypoints={waypoints}
-                weatherPoints={weatherPoints}
-                hazards={hazards}
+                weather={weather}
+                passes={hazardReport?.passes ?? []}
                 onMapClick={handleMapClick}
               />
             </div>
 
-            {/* Weather Checkpoints Widget */}
-            <WeatherWidget weatherPoints={weatherPoints} isLoading={isLoadingWeather} />
+            <WeatherWidget
+              checkpoints={weather}
+              isLoading={isLoadingWeather}
+              hasRoute={polyline.length > 0}
+            />
 
-            {/* Height Elevation Profile Chart */}
-            <ElevationChart summary={summary} elevationPoints={elevationPoints} />
+            <Suspense
+              fallback={
+                <div className="bg-white border border-[#E0E0D6] rounded-2xl p-5 shadow-sm text-center text-xs text-[#6B705C]">
+                  Laster høydeprofil...
+                </div>
+              }
+            >
+              <ElevationChart
+                summary={route?.summary}
+                elevationPoints={route?.elevationPoints ?? []}
+                sources={route?.sources}
+                notes={route?.notes ?? []}
+              />
+            </Suspense>
           </div>
         </div>
       </main>
 
-      {/* Footer */}
       <footer className="bg-white border-t border-[#E0E0D6] text-xs text-[#6B705C] py-4 px-5 mt-8">
         <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-2 text-center sm:text-left">
-          <p>© 2026 Sving.no — Norsk MC-turplanlegger for svingete veier.</p>
-          <p className="text-[11px] text-[#6B705C]">
-            Kart fra OpenStreetMap & Kartverket. Vær fra MET.no WeatherAPI. Ingen registrering eller sporing.
+          <p>Sving — norsk MC-turplanlegger for svingete veier. Gratis og uten sporing.</p>
+          <p className="text-[11px]">
+            Kart fra OpenStreetMap og Kartverket. Vær fra MET.no. Ruting fra OSRM.
           </p>
         </div>
       </footer>
 
-      {/* Modals & Drawers */}
       <ExportModal
         isOpen={isExportOpen}
         onClose={() => setIsExportOpen(false)}
         waypoints={waypoints}
-        polyline={polyline}
-        elevationPoints={elevationPoints}
-        summary={summary}
+        route={route}
         profile={profile}
+        avoidHighways={avoidHighways}
         onSaveTour={handleSaveTour}
+        onNotify={pushNotice}
       />
 
       <SavedToursDrawer
@@ -546,16 +550,46 @@ export default function App() {
       <PresetRoutesModal
         isOpen={isPresetsOpen}
         onClose={() => setIsPresetsOpen(false)}
-        onSelectPreset={handleSelectPreset}
+        onSelectPreset={(preset) => {
+          setIsPresetsOpen(false);
+          applyPreset(preset, false);
+        }}
       />
 
       <NearbyRouteModal
         isOpen={isNearbyModalOpen}
         onClose={() => setIsNearbyModalOpen(false)}
         suggestions={nearbySuggestions}
-        userCoords={userCoords}
-        onSelectRoute={handleSelectNearbyRoute}
+        onSelectRoute={(preset, startFromUser) => {
+          setIsNearbyModalOpen(false);
+          applyPreset(preset, startFromUser);
+        }}
       />
     </div>
   );
+}
+
+/** Names a weather checkpoint after the nearest waypoint, when there is one close by. */
+function labelForCheckpoint(
+  fraction: number,
+  lat: number,
+  lng: number,
+  placed: Waypoint[],
+  distanceAlongKm: number
+): string {
+  if (fraction === 0 && placed[0]?.name) return placed[0].name;
+  if (fraction === 1 && placed[placed.length - 1]?.name) return placed[placed.length - 1].name;
+
+  let nearest: Waypoint | null = null;
+  let nearestKm = Infinity;
+  for (const wp of placed) {
+    const distance = haversineDistance(lat, lng, wp.lat, wp.lng);
+    if (distance < nearestKm) {
+      nearestKm = distance;
+      nearest = wp;
+    }
+  }
+
+  if (nearest && nearest.name && nearestKm < 15) return nearest.name;
+  return `Underveis (${Math.round(distanceAlongKm)} km)`;
 }
