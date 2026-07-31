@@ -1,9 +1,10 @@
 import { handleNearbyRouteRequest } from '../server/handlers/route.js';
 import { toResponse } from '../server/handlers/apiResult.js';
 
-// A single ORS round_trip call with embedded elevation — no OSRM fallback chain,
-// so this needs less headroom than /api/route, but still more than the default.
-export const maxDuration = 15;
+// Up to 4 round_trip attempts at 6 s each, since ORS's own randomised algorithm
+// genuinely fails about half the time in constrained road networks — this
+// budget matches the 30 s already proven safe on /api/route.
+export const maxDuration = 30;
 
 export async function POST(request: Request): Promise<Response> {
   const payload = await request.json().catch(() => null);
