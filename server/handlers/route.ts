@@ -361,9 +361,16 @@ export async function handleNearbyRouteRequest(payload: unknown): Promise<ApiRes
 // a fresh seed each time turns that into a route the rider actually sees.
 const ROUND_TRIP_ATTEMPTS = 4;
 
-/** ORS-side round_trip failures are a 500 with no useful body; anything else is a real problem worth surfacing immediately. */
+/**
+ * ORS-side round_trip failures are a bare 500. Also seen twice in production:
+ * a 404 for this exact same hardcoded URL, on requests otherwise identical to
+ * ones that succeeded seconds apart — since the path never varies, that can
+ * only be a transient blip on ORS's own infrastructure, never a real "this
+ * endpoint doesn't exist". Anything else (401/403 key problems, 429 rate
+ * limits, 400 bad requests) is a real problem worth surfacing immediately.
+ */
 export function isRetryableRoundTripFailure(err: unknown): boolean {
-  return err instanceof UpstreamError && err.status === 500;
+  return err instanceof UpstreamError && (err.status === 500 || err.status === 404);
 }
 
 async function routeViaOrsRoundTrip(

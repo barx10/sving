@@ -174,6 +174,15 @@ describe('isRetryableRoundTripFailure', () => {
     );
   });
 
+  // Seen twice in production for this exact hardcoded, always-valid URL —
+  // since the path never varies, a 404 here can only be a transient blip on
+  // ORS's own infrastructure, never a real "this endpoint doesn't exist".
+  it('retries a 404 from ORS, since the requested path never changes', () => {
+    expect(isRetryableRoundTripFailure(new UpstreamError('OpenRouteService', 'svarte 404', 404))).toBe(
+      true
+    );
+  });
+
   it('does not retry an auth failure — a fresh seed will not fix a bad key', () => {
     expect(isRetryableRoundTripFailure(new UpstreamError('OpenRouteService', 'svarte 401', 401))).toBe(
       false
