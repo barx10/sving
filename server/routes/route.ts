@@ -131,11 +131,43 @@ async function calculateRoute(
 /* OpenRouteService                                                            */
 /* -------------------------------------------------------------------------- */
 
+export interface OrsFeature {
+  geometry: { coordinates: number[][] };
+  properties: { summary: { distance: number; duration: number } };
+}
+
 interface OrsResponse {
-  features?: {
-    geometry: { coordinates: number[][] };
-    properties: { summary: { distance: number; duration: number } };
-  }[];
+  features?: OrsFeature[];
+}
+
+/**
+ * Applies the same curvature ranking to ORS alternatives that we use for OSRM's.
+ *
+ * ORS has no motorcycle profile and no curvature weighting of its own, so
+ * without this the ORS path would return whatever a car would drive. Motorways
+ * are already excluded upstream via avoid_features, so curvature alone decides.
+ */
+export function pickCurviestFeature(
+  features: OrsFeature[],
+  profile: RouteProfile,
+  avoidHighways: boolean
+): OrsFeature | null {
+  if (features.length === 0) return null;
+  if (features.length === 1 || profile === 'fastest') return features[0];
+
+  let best = features[0];
+  let bestScore = -Infinity;
+
+  for (const feature of features) {
+    const line: [number, number][] = feature.geometry.coordinates.map((c) => [c[1], c[0]]);
+    const score = scoreRoute(line, 0, profile, avoidHighways);
+    if (score > bestScore) {
+      bestScore = score;
+      best = feature;
+    }
+  }
+
+  return best;
 }
 
 async function routeViaOpenRouteService(
@@ -143,9 +175,12 @@ async function routeViaOpenRouteService(
   profile: RouteProfile,
   avoidHighways: boolean
 ): Promise<RouteResponse> {
-  const orsProfile =
-    profile === 'fastest' && !avoidHighways ? 'driving-car' : 'driving-motorcycle';
-
+  // OpenRouteService has no motorcycle profile. Its full set is driving-car,
+  // driving-hgv, four cycling profiles, two foot profiles and wheelchair — see
+  // https://giscience.github.io/openrouteservice/run-instance/configuration/engine/profiles/
+  // An earlier version asked for "driving-motorcycle", which does not exist, so
+  // every ORS request failed and silently fell back to OSRM. Motorcycle-specific
+  // behaviour comes from avoid_features plus the curvature ranking below.
   const body: Record<string, unknown> = {
     coordinates,
     elevation: true,
@@ -157,13 +192,19 @@ async function routeViaOpenRouteService(
     body.options = { avoid_features: ['highways', 'tollways'] };
   }
 
+  // ORS only offers alternatives for point-to-point routes, same as OSRM.
+  const wantsAlternatives = profile !== 'fastest' && coordinates.length === 2;
+  if (wantsAlternatives) {
+    body.alternative_routes = { target_count: 3, share_factor: 0.6, weight_factor: 1.6 };
+  }
+
   const data = await fetchJson<OrsResponse>(
     'OpenRouteService',
-    `https://api.openrouteservice.org/v2/directions/${orsProfile}/geojson`,
+    'https://api.openrouteservice.org/v2/directions/driving-car/geojson',
     { method: 'POST', body, headers: { Authorization: OPENROUTESERVICE_API_KEY } }
   );
 
-  const feature = data.features?.[0];
+  const feature = pickCurviestFeature(data.features ?? [], profile, avoidHighways);
   if (!feature) {
     throw new UpstreamError('OpenRouteService', 'Fant ingen rute mellom de valgte punktene');
   }
@@ -282,18 +323,29 @@ async function routeViaOsrm(
 }
 
 /**
- * Ranks OSRM's alternative routes for the requested riding style.
+ * Scores a candidate route for the requested riding style.
  *
- * The previous version scored candidates by raw distance, so "curvy" really
- * meant "longest", which happily picked a straight detour. Curvature measures
- * the thing riders actually want: degrees of turning per kilometre.
+ * Curvature — degrees of heading change per kilometre — is the thing riders
+ * actually want. Scoring by raw distance, as an earlier version did, makes
+ * "curvy" mean "longest" and happily picks a straight detour.
+ *
+ * Shared by both routing backends so the two paths cannot drift apart.
  */
+export function scoreRoute(
+  line: [number, number][],
+  highwayFraction: number,
+  profile: RouteProfile,
+  avoidHighways: boolean
+): number {
+  const highwayWeight = avoidHighways ? 200 : 60;
+  const curvatureWeight = profile === 'fastest' ? 0 : 1;
+  return curvatureWeight * curvatureDegPerKm(line) - highwayWeight * highwayFraction;
+}
+
+/** Picks the best of OSRM's alternative routes for the requested riding style. */
 export function pickBestRoute(routes: OsrmRoute[], profile: RouteProfile, avoidHighways: boolean): OsrmRoute {
   if (profile === 'fastest' && !avoidHighways) return routes[0];
   if (routes.length === 1) return routes[0];
-
-  const highwayWeight = avoidHighways ? 200 : 60;
-  const curvatureWeight = profile === 'fastest' ? 0 : 1;
 
   let best = routes[0];
   let bestScore = -Infinity;
@@ -303,8 +355,7 @@ export function pickBestRoute(routes: OsrmRoute[], profile: RouteProfile, avoidH
     const totalKm = candidate.distance / 1000;
     const highwayFraction = totalKm > 0 ? estimateHighwayKm(candidate) / totalKm : 0;
 
-    const score = curvatureWeight * curvatureDegPerKm(line) - highwayWeight * highwayFraction;
-
+    const score = scoreRoute(line, highwayFraction, profile, avoidHighways);
     if (score > bestScore) {
       bestScore = score;
       best = candidate;

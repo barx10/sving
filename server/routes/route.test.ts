@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 import {
   type ElevationPoint,
+  type OrsFeature,
   type OsrmRoute,
   elevationStats,
   pickBestRoute,
+  pickCurviestFeature,
   pickSampleIndices,
 } from './route';
 
@@ -64,6 +67,65 @@ describe('pickBestRoute', () => {
       geometry: { coordinates: twistyLine.map(([lat, lng]) => [lng, lat] as [number, number]) },
     };
     expect(() => pickBestRoute([withoutLegs], 'curvy', true)).not.toThrow();
+  });
+});
+
+/** Builds an ORS-shaped feature from a polyline given as [lat, lng] pairs. */
+function feature(line: [number, number][], distanceKm: number): OrsFeature {
+  return {
+    geometry: { coordinates: line.map(([lat, lng]) => [lng, lat, 500]) },
+    properties: { summary: { distance: distanceKm * 1000, duration: distanceKm * 60 } },
+  };
+}
+
+describe('pickCurviestFeature', () => {
+  it('picks the curviest of the alternatives ORS returns', () => {
+    const straight = feature(straightLine, 220);
+    const twisty = feature(twistyLine, 90);
+
+    expect(pickCurviestFeature([straight, twisty], 'curvy', true)).toBe(twisty);
+  });
+
+  it('keeps ORS’s own first choice when the rider wants speed', () => {
+    const fastest = feature(straightLine, 200);
+    const twisty = feature(twistyLine, 90);
+
+    expect(pickCurviestFeature([fastest, twisty], 'fastest', false)).toBe(fastest);
+  });
+
+  it('returns null when ORS found no route at all', () => {
+    expect(pickCurviestFeature([], 'curvy', true)).toBeNull();
+  });
+
+  it('returns the single route when there are no alternatives', () => {
+    const only = feature(twistyLine, 90);
+    expect(pickCurviestFeature([only], 'curvy', true)).toBe(only);
+  });
+});
+
+describe('OpenRouteService profile', () => {
+  it('requests a profile that actually exists', () => {
+    // OpenRouteService has no motorcycle profile — the valid set is
+    // driving-car, driving-hgv, cycling-*, foot-* and wheelchair. Asking for
+    // "driving-motorcycle" made every ORS request fail and fall back to OSRM
+    // without anyone noticing, because the fallback is silent by design.
+    const source = readFileSync(new URL('./route.ts', import.meta.url), 'utf8');
+    const requested = [...source.matchAll(/v2\/directions\/([\w-]+)\//g)].map((m) => m[1]);
+
+    expect(requested.length).toBeGreaterThan(0);
+    for (const profile of requested) {
+      expect([
+        'driving-car',
+        'driving-hgv',
+        'cycling-regular',
+        'cycling-road',
+        'cycling-mountain',
+        'cycling-electric',
+        'foot-walking',
+        'foot-hiking',
+        'wheelchair',
+      ]).toContain(profile);
+    }
   });
 });
 
