@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { MapContainer, Marker, Polyline, Popup, TileLayer, useMap, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
 import type { MountainPassStatus, PassStatus, WeatherCheckpoint, Waypoint } from '../types';
@@ -10,6 +10,10 @@ interface MapViewProps {
   waypoints: Waypoint[];
   weather?: WeatherCheckpoint[];
   passes?: MountainPassStatus[];
+  /** Owned by the mountain pass panel, so list and map never disagree. */
+  showPasses?: boolean;
+  focusedPassId?: string | null;
+  onFocusPass?: (id: string | null) => void;
   onMapClick?: (lat: number, lng: number) => void;
 }
 
@@ -53,11 +57,24 @@ const PASS_MARKER: Record<PassStatus, { bg: string; glyph: string }> = {
   closed_seasonal: { bg: '#BC4749', glyph: '⛔' },
 };
 
-const createPassIcon = (status: PassStatus) => {
+/**
+ * The picked pass gets a name label and a ring so it stands out among the
+ * dozen-odd others — otherwise clicking a row in the list moves the map to a
+ * marker the rider cannot tell apart from its neighbours. The label overflows
+ * the icon box to the right on purpose, keeping the glyph over the summit.
+ */
+const createPassIcon = (status: PassStatus, isFocused: boolean, name: string) => {
   const { bg, glyph } = PASS_MARKER[status];
+  const shadow = isFocused
+    ? 'box-shadow:0 0 0 3px rgba(167,201,87,0.9),0 6px 16px rgba(0,0,0,0.35);'
+    : 'box-shadow:0 4px 10px rgba(0,0,0,0.3);';
+  const label = isFocused
+    ? `<span style="font-family:'Plus Jakarta Sans',sans-serif;letter-spacing:0.01em;">${escapeHtml(name)}</span>`
+    : '';
+
   return L.divIcon({
     className: 'hazard-leaflet-marker',
-    html: `<div style="background-color:${bg};color:#ffffff;padding:4px 6px;border-radius:8px;box-shadow:0 4px 10px rgba(0,0,0,0.3);display:flex;align-items:center;font-size:11px;font-weight:800;">${glyph}</div>`,
+    html: `<div style="background-color:${bg};color:#ffffff;padding:4px 6px;border-radius:8px;${shadow}display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:800;white-space:nowrap;">${glyph}${label}</div>`,
     iconSize: [32, 24],
     iconAnchor: [16, 12],
   });
@@ -93,6 +110,32 @@ const FitBoundsHandler: React.FC<{ polyline: [number, number][]; waypoints: Wayp
   return null;
 };
 
+const FLY_DURATION_S = 0.8;
+
+/**
+ * Moves the map to the pass the rider just picked in the list, then opens its
+ * popup. The popup waits for the flight to land: opening it up front means its
+ * auto-pan and the flight fight over the centre, and the card ends up half off
+ * the top of the map.
+ */
+const PassFocusHandler: React.FC<{
+  pass: MountainPassStatus | null;
+  markers: React.RefObject<Record<string, L.Marker | null>>;
+}> = ({ pass, markers }) => {
+  const map = useMap();
+
+  useEffect(() => {
+    if (!pass) return;
+
+    map.flyTo([pass.lat, pass.lng], Math.max(map.getZoom(), 10), { duration: FLY_DURATION_S });
+
+    const timer = setTimeout(() => markers.current[pass.id]?.openPopup(), FLY_DURATION_S * 1000 + 60);
+    return () => clearTimeout(timer);
+  }, [pass, map, markers]);
+
+  return null;
+};
+
 const ToggleButton: React.FC<{
   active: boolean;
   onClick: () => void;
@@ -118,13 +161,17 @@ export const MapView: React.FC<MapViewProps> = ({
   waypoints,
   weather = [],
   passes = [],
+  showPasses = false,
+  focusedPassId = null,
+  onFocusPass,
   onMapClick,
 }) => {
   const [mapTile, setMapTile] = useState<'voyager' | 'kartverket_topo'>('voyager');
   const [showWeather, setShowWeather] = useState(false);
-  const [showPasses, setShowPasses] = useState(false);
 
+  const passMarkerRefs = useRef<Record<string, L.Marker | null>>({});
   const placedWaypoints = waypoints.filter(hasCoords);
+  const focusedPass = (showPasses && passes.find((p) => p.id === focusedPassId)) || null;
 
   return (
     <div className="relative w-full h-full min-h-[380px] rounded-2xl overflow-hidden border border-[#E0E0D6] shadow-md bg-[#E5E9EC]">
@@ -162,16 +209,6 @@ export const MapView: React.FC<MapViewProps> = ({
           <CloudSun className="w-3.5 h-3.5" />
           <span>Vær</span>
         </ToggleButton>
-
-        <ToggleButton
-          active={showPasses}
-          onClick={() => setShowPasses((prev) => !prev)}
-          title="Vis eller skjul fjelloverganger"
-          activeClass="bg-amber-50 text-amber-900 border-amber-200"
-        >
-          <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />
-          <span>Fjelloverganger</span>
-        </ToggleButton>
       </div>
 
       <MapContainer
@@ -195,6 +232,7 @@ export const MapView: React.FC<MapViewProps> = ({
 
         <MapClickHandler onMapClick={onMapClick} />
         <FitBoundsHandler polyline={polyline} waypoints={waypoints} />
+        <PassFocusHandler pass={focusedPass} markers={passMarkerRefs} />
 
         {polyline.length > 0 && (
           <>
@@ -264,8 +302,23 @@ export const MapView: React.FC<MapViewProps> = ({
 
         {showPasses &&
           passes.map((pass) => (
-            <Marker key={pass.id} position={[pass.lat, pass.lng]} icon={createPassIcon(pass.status)}>
-              <Popup>
+            <Marker
+              key={pass.id}
+              position={[pass.lat, pass.lng]}
+              icon={createPassIcon(pass.status, pass.id === focusedPassId, pass.name)}
+              zIndexOffset={pass.id === focusedPassId ? 1000 : 0}
+              ref={(instance) => {
+                passMarkerRefs.current[pass.id] = instance;
+              }}
+              eventHandlers={{ click: () => onFocusPass?.(pass.id) }}
+            >
+              {/* The extra top padding keeps the card clear of the map's own
+                  control bar, which floats above the Leaflet panes. */}
+              <Popup
+                autoPanPaddingTopLeft={[24, 58]}
+                autoPanPaddingBottomRight={[24, 24]}
+                maxWidth={260}
+              >
                 <div className="p-1">
                   <div className="flex items-center gap-1.5 font-bold text-sm">
                     {pass.status === 'closed_seasonal' ? (

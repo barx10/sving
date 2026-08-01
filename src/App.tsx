@@ -28,7 +28,7 @@ import { Header } from './components/Header';
 import { RouteEditor } from './components/RouteEditor';
 import { MapView } from './components/MapView';
 import { WeatherWidget } from './components/WeatherWidget';
-import { HazardBanner } from './components/HazardBanner';
+import { MountainPassPanel } from './components/MountainPassPanel';
 import { ExportModal } from './components/ExportModal';
 import { SavedToursDrawer } from './components/SavedToursDrawer';
 import { PresetRoutesModal } from './components/PresetRoutesModal';
@@ -74,6 +74,11 @@ export default function App() {
   const [weather, setWeather] = useState<WeatherCheckpoint[]>([]);
   const [hazardReport, setHazardReport] = useState<HazardReport | null>(null);
 
+  // The pass list is folded away until asked for, and the same flag decides
+  // whether the markers are on the map — one control, never out of sync.
+  const [arePassesOpen, setArePassesOpen] = useState(false);
+  const [focusedPassId, setFocusedPassId] = useState<string | null>(null);
+
   const [isLoadingRoute, setIsLoadingRoute] = useState(false);
   const [isLoadingWeather, setIsLoadingWeather] = useState(false);
   const [isSuggestingLocation, setIsSuggestingLocation] = useState(false);
@@ -95,6 +100,7 @@ export default function App() {
 
   /** Lets a newer route request cancel one still in flight. */
   const routeRequestRef = useRef<AbortController | null>(null);
+  const mapSectionRef = useRef<HTMLDivElement>(null);
 
   const savedTours = useLiveQuery(() => db.tours.orderBy('createdAt').reverse().toArray()) || [];
 
@@ -480,6 +486,34 @@ export default function App() {
     await db.tours.delete(id);
   }, []);
 
+  const handleTogglePasses = useCallback(() => {
+    setArePassesOpen((prev) => !prev);
+    setFocusedPassId(null);
+  }, []);
+
+  /**
+   * Picking a pass is only useful if the map is on screen. On the stacked
+   * mobile layout it sits below the planner, so bring it into view — but never
+   * yank the page around when it is already visible, as on desktop.
+   */
+  const handleFocusPass = useCallback((id: string | null) => {
+    setFocusedPassId(id);
+    if (!id) return;
+
+    const element = mapSectionRef.current;
+    if (!element) return;
+
+    const { top, bottom, height } = element.getBoundingClientRect();
+    const visibleHeight = Math.min(bottom, window.innerHeight) - Math.max(top, 0);
+    const fitsOnScreen = Math.min(height, window.innerHeight);
+
+    // A couple of pixels of slack keeps the desktop layout, where the map is
+    // already fully in view, perfectly still.
+    if (visibleHeight < fitsOnScreen - 4) {
+      element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }, []);
+
   const handleDepartureChange = useCallback(
     (next: string) => {
       setDepartureTime(next);
@@ -505,8 +539,6 @@ export default function App() {
       />
 
       <main className="flex-1 max-w-7xl w-full mx-auto p-3 sm:p-5 space-y-4">
-        <HazardBanner report={hazardReport} />
-
         <NoticeStack notices={notices} onDismiss={dismissNotice} />
 
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
@@ -528,15 +560,26 @@ export default function App() {
               isSuggestingLocation={isSuggestingLocation}
               isLoading={isLoadingRoute}
             />
+
+            <MountainPassPanel
+              report={hazardReport}
+              isOpen={arePassesOpen}
+              onToggle={handleTogglePasses}
+              focusedPassId={focusedPassId}
+              onFocusPass={handleFocusPass}
+            />
           </div>
 
           <div className="lg:col-span-8 space-y-4 flex flex-col">
-            <div className="h-[420px] sm:h-[480px] w-full">
+            <div ref={mapSectionRef} className="h-[420px] sm:h-[480px] w-full">
               <MapView
                 polyline={polyline}
                 waypoints={waypoints}
                 weather={weather}
                 passes={hazardReport?.passes ?? []}
+                showPasses={arePassesOpen}
+                focusedPassId={focusedPassId}
+                onFocusPass={handleFocusPass}
                 onMapClick={handleMapClick}
               />
             </div>
