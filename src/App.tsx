@@ -1,9 +1,10 @@
-import React, { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
+import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from './db';
 import type {
   HazardReport,
   Notice,
+  PointOfInterest,
   PresetRoute,
   RouteProfile,
   RouteResult,
@@ -15,6 +16,7 @@ import {
   ApiError,
   fetchHazards,
   fetchNearbyRoute,
+  fetchPois,
   fetchRoute,
   fetchWeather,
   reverseGeocode,
@@ -23,12 +25,13 @@ import {
 import { PRESET_ROUTES } from './data/presetRoutes';
 import { cumulativeDistancesKm, hasCoords, haversineDistance } from './utils/geo';
 import { pickWeatherFractions } from './utils/weatherCheckpoints';
+import { orderAlongRoute, sampleRouteForPois } from './utils/pois';
 import { decodeRouteFromHash, encodeRouteToHash } from './utils/routeLink';
 import { Header } from './components/Header';
 import { RouteEditor } from './components/RouteEditor';
 import { MapView } from './components/MapView';
 import { WeatherWidget } from './components/WeatherWidget';
-import { MountainPassPanel } from './components/MountainPassPanel';
+import { RoutePanel, type PoiStatus, type RouteLayer } from './components/RoutePanel';
 import { ExportModal } from './components/ExportModal';
 import { SavedToursDrawer } from './components/SavedToursDrawer';
 import { PresetRoutesModal } from './components/PresetRoutesModal';
@@ -74,10 +77,15 @@ export default function App() {
   const [weather, setWeather] = useState<WeatherCheckpoint[]>([]);
   const [hazardReport, setHazardReport] = useState<HazardReport | null>(null);
 
-  // The pass list is folded away until asked for, and the same flag decides
-  // whether the markers are on the map — one control, never out of sync.
-  const [arePassesOpen, setArePassesOpen] = useState(false);
-  const [focusedPassId, setFocusedPassId] = useState<string | null>(null);
+  // The route panel is folded away until asked for, and what it shows is also
+  // what the map shows — one control, never out of sync.
+  const [isRoutePanelOpen, setIsRoutePanelOpen] = useState(false);
+  const [activeLayer, setActiveLayer] = useState<RouteLayer>('passes');
+  const [focusedId, setFocusedId] = useState<string | null>(null);
+
+  const [pois, setPois] = useState<PointOfInterest[]>([]);
+  const [poiStatus, setPoiStatus] = useState<PoiStatus>('idle');
+  const [poiError, setPoiError] = useState<string | null>(null);
 
   const [isLoadingRoute, setIsLoadingRoute] = useState(false);
   const [isLoadingWeather, setIsLoadingWeather] = useState(false);
@@ -100,6 +108,7 @@ export default function App() {
 
   /** Lets a newer route request cancel one still in flight. */
   const routeRequestRef = useRef<AbortController | null>(null);
+  const poiRequestRef = useRef<AbortController | null>(null);
   const mapSectionRef = useRef<HTMLDivElement>(null);
 
   const savedTours = useLiveQuery(() => db.tours.orderBy('createdAt').reverse().toArray()) || [];
@@ -166,6 +175,51 @@ export default function App() {
   );
 
   /* ---------------------------------------------------------------- */
+  /* Fuel and rest areas along the route                               */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * Overpass is the strictest upstream this app talks to, so the corridor
+   * search happens once per route and only when the rider actually opens one of
+   * those tabs. Both categories arrive together, which makes switching between
+   * Bensin and Rasteplasser free.
+   */
+  const loadPois = useCallback(async (routePolyline: [number, number][]) => {
+    if (routePolyline.length < 2) return;
+
+    poiRequestRef.current?.abort();
+    const controller = new AbortController();
+    poiRequestRef.current = controller;
+
+    setPoiStatus('loading');
+    setPoiError(null);
+
+    try {
+      const found = await fetchPois(sampleRouteForPois(routePolyline), controller.signal);
+      if (controller.signal.aborted) return;
+
+      setPois(orderAlongRoute(found, routePolyline));
+      setPoiStatus('ready');
+    } catch (err) {
+      if (controller.signal.aborted) return;
+      setPoiError(err instanceof ApiError ? err.message : 'Kunne ikke søke langs ruta.');
+      setPoiStatus('error');
+    } finally {
+      if (poiRequestRef.current === controller) poiRequestRef.current = null;
+    }
+  }, []);
+
+  /** A new route invalidates everything we found along the old one. */
+  const resetPois = useCallback(() => {
+    poiRequestRef.current?.abort();
+    poiRequestRef.current = null;
+    setPois([]);
+    setPoiStatus('idle');
+    setPoiError(null);
+    setFocusedId(null);
+  }, []);
+
+  /* ---------------------------------------------------------------- */
   /* Routing                                                           */
   /* ---------------------------------------------------------------- */
 
@@ -190,6 +244,7 @@ export default function App() {
         if (controller.signal.aborted) return;
 
         setRoute(result);
+        resetPois();
         setNotices((prev) => prev.filter((n) => n.tone !== 'error'));
 
         // Keep the address bar in sync so the rider can just copy the URL.
@@ -210,7 +265,7 @@ export default function App() {
         }
       }
     },
-    [loadWeather, pushNotice]
+    [loadWeather, resetPois, pushNotice]
   );
 
   /* ---------------------------------------------------------------- */
@@ -305,8 +360,9 @@ export default function App() {
     setRoute(null);
     setWeather([]);
     setNotices([]);
+    resetPois();
     window.history.replaceState(null, '', window.location.pathname + window.location.search);
-  }, []);
+  }, [resetPois]);
 
   const handleSetProfile = useCallback((next: RouteProfile) => {
     setProfile(next);
@@ -425,6 +481,7 @@ export default function App() {
       const result = await fetchNearbyRoute(userCoords.lat, userCoords.lng, loopRadiusKm);
       setLoopResult(result);
       setRoute(result);
+      resetPois();
       setProfile('curvy');
       setAvoidHighways(true);
 
@@ -447,7 +504,7 @@ export default function App() {
     } finally {
       setIsGeneratingLoop(false);
     }
-  }, [userCoords, loopRadiusKm, departureTime, loadWeather, pushNotice]);
+  }, [userCoords, loopRadiusKm, departureTime, loadWeather, resetPois, pushNotice]);
 
   const handleSaveTour = useCallback(
     async (title: string, notes: string) => {
@@ -486,18 +543,23 @@ export default function App() {
     await db.tours.delete(id);
   }, []);
 
-  const handleTogglePasses = useCallback(() => {
-    setArePassesOpen((prev) => !prev);
-    setFocusedPassId(null);
+  const handleToggleRoutePanel = useCallback(() => {
+    setIsRoutePanelOpen((prev) => !prev);
+    setFocusedId(null);
+  }, []);
+
+  const handleLayerChange = useCallback((layer: RouteLayer) => {
+    setActiveLayer(layer);
+    setFocusedId(null);
   }, []);
 
   /**
-   * Picking a pass is only useful if the map is on screen. On the stacked
+   * Picking a place is only useful if the map is on screen. On the stacked
    * mobile layout it sits below the planner, so bring it into view — but never
    * yank the page around when it is already visible, as on desktop.
    */
-  const handleFocusPass = useCallback((id: string | null) => {
-    setFocusedPassId(id);
+  const handleFocusItem = useCallback((id: string | null) => {
+    setFocusedId(id);
     if (!id) return;
 
     const element = mapSectionRef.current;
@@ -527,6 +589,35 @@ export default function App() {
   );
 
   const polyline = route?.polyline ?? [];
+
+  /**
+   * The corridor search waits for the rider to ask for it: opening the panel on
+   * one of those tabs is the trigger, and the result is kept until the route
+   * changes. Overpass never hears about a route nobody looked up.
+   */
+  useEffect(() => {
+    if (!isRoutePanelOpen || activeLayer === 'passes') return;
+    if (polyline.length < 2 || poiStatus !== 'idle') return;
+    void loadPois(polyline);
+  }, [isRoutePanelOpen, activeLayer, polyline, poiStatus, loadPois]);
+
+  useEffect(() => () => poiRequestRef.current?.abort(), []);
+
+  // The map shows exactly what the panel is showing, and nothing when it is
+  // closed. Keeping the decision here means MapView never learns about tabs.
+  const visiblePasses = useMemo(
+    () =>
+      isRoutePanelOpen && activeLayer === 'passes' ? (hazardReport?.passes ?? []) : [],
+    [isRoutePanelOpen, activeLayer, hazardReport]
+  );
+
+  const visiblePois = useMemo(
+    () =>
+      isRoutePanelOpen && activeLayer !== 'passes'
+        ? pois.filter((poi) => poi.category === activeLayer)
+        : [],
+    [isRoutePanelOpen, activeLayer, pois]
+  );
 
   return (
     <div className="min-h-screen bg-[#F4F4EF] text-[#2D332A] flex flex-col font-sans selection:bg-[#A7C957] selection:text-[#2D332A]">
@@ -561,12 +652,19 @@ export default function App() {
               isLoading={isLoadingRoute}
             />
 
-            <MountainPassPanel
+            <RoutePanel
               report={hazardReport}
-              isOpen={arePassesOpen}
-              onToggle={handleTogglePasses}
-              focusedPassId={focusedPassId}
-              onFocusPass={handleFocusPass}
+              pois={pois}
+              poiStatus={poiStatus}
+              poiError={poiError}
+              hasRoute={polyline.length > 1}
+              isOpen={isRoutePanelOpen}
+              onToggle={handleToggleRoutePanel}
+              activeLayer={activeLayer}
+              onLayerChange={handleLayerChange}
+              focusedId={focusedId}
+              onFocusItem={handleFocusItem}
+              onRetryPois={() => loadPois(polyline)}
             />
           </div>
 
@@ -576,10 +674,10 @@ export default function App() {
                 polyline={polyline}
                 waypoints={waypoints}
                 weather={weather}
-                passes={hazardReport?.passes ?? []}
-                showPasses={arePassesOpen}
-                focusedPassId={focusedPassId}
-                onFocusPass={handleFocusPass}
+                passes={visiblePasses}
+                pois={visiblePois}
+                focusedId={focusedId}
+                onFocusItem={handleFocusItem}
                 onMapClick={handleMapClick}
               />
             </div>

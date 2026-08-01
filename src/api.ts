@@ -1,5 +1,6 @@
 import type {
   HazardReport,
+  PointOfInterest,
   RouteProfile,
   RouteResult,
   WeatherCheckpoint,
@@ -95,6 +96,24 @@ export function fetchWeather(
 
 export function fetchHazards(signal?: AbortSignal): Promise<HazardReport> {
   return requestJson<HazardReport>('/api/hazards', { signal });
+}
+
+/**
+ * Fuel and rest areas in a corridor along the sampled route. Both categories
+ * come back from one call — Overpass is the strictest upstream this app uses,
+ * and asking it twice for the same corridor would be rude.
+ */
+export async function fetchPois(
+  points: [number, number][],
+  signal?: AbortSignal
+): Promise<PointOfInterest[]> {
+  const { pois } = await requestJson<{ pois: PointOfInterest[] }>('/api/pois', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ points }),
+    signal,
+  });
+  return pois;
 }
 
 export interface PlaceResult {
