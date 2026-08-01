@@ -1,5 +1,6 @@
 import type { RouteProfile, Waypoint } from '../types';
 import { hasCoords, isValidCoord } from './geo';
+import { normalizeProfile } from './routeProfile';
 
 /**
  * Encodes a planned route into the URL hash so riders can share it in a group
@@ -91,8 +92,6 @@ export function buildShareUrl(
   return `${base.split('#')[0]}${hash}`;
 }
 
-const VALID_PROFILES: RouteProfile[] = ['curvy', 'scenic', 'fastest'];
-
 /**
  * Reads a route back out of a URL hash. Returns null for anything malformed —
  * a bad link should drop the rider on an empty planner, never crash the app.
@@ -125,7 +124,8 @@ export function decodeRouteFromHash(hash: string): SharedRoute | null {
 
     return {
       waypoints,
-      profile: VALID_PROFILES.includes(parsed.p) ? parsed.p : 'curvy',
+      // Links shared before the riding styles merged carry 'scenic'.
+      profile: normalizeProfile(parsed.p),
       avoidHighways: parsed.a !== 0,
     };
   } catch {

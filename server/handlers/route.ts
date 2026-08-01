@@ -8,6 +8,7 @@ import {
   isValidCoord,
 } from '../../src/utils/geo.js';
 import type { RouteProfile } from '../../src/types.js';
+import { curvatureRankingApplies, normalizeProfile } from '../../src/utils/routeProfile.js';
 import { badRequest, type ApiResult } from './apiResult.js';
 
 /** Roads do not change hour to hour; identical requests can share a result. */
@@ -25,9 +26,19 @@ const ELEVATION_SAMPLES = 75;
  */
 const PACE_ADJUSTMENT: Record<RouteProfile, number> = {
   curvy: 1.2,
-  scenic: 1.25,
   fastest: 1.0,
 };
+
+/**
+ * Every route's estimated time goes through here, whichever engine produced it.
+ *
+ * The OpenRouteService path used to skip the adjustment entirely and hand back
+ * ORS's raw car estimate, so the same tour was reported twenty percent quicker
+ * on an instance that had a routing key than on one that fell back to OSRM.
+ */
+export function estimatedDurationMin(rawSeconds: number, profile: RouteProfile): number {
+  return Math.round((rawSeconds / 60) * PACE_ADJUSTMENT[profile]);
+}
 
 export interface ElevationPoint {
   distanceKm: number;
@@ -85,9 +96,7 @@ export async function handleRouteRequest(payload: unknown): Promise<ApiResult> {
     return badRequest('Ett eller flere rutepunkter har ugyldige koordinater.');
   }
 
-  const resolvedProfile: RouteProfile = ['curvy', 'scenic', 'fastest'].includes(profile)
-    ? profile
-    : 'curvy';
+  const resolvedProfile = normalizeProfile(profile);
 
   const cacheKey = JSON.stringify([
     coordinates.map(([lng, lat]) => [round5(lng), round5(lat)]),
@@ -170,23 +179,18 @@ export function pickCurviestFeature(
   return best;
 }
 
-// ORS's public API caps alternative_routes at 100 km of road distance — asking
-// above that returns a 400. Straight-line distance is the only thing known
-// before routing, so the threshold stays well under 100 km to leave room for
-// how much longer a curvy mountain road runs compared to the straight line
-// between its endpoints.
-const ALTERNATIVES_MAX_STRAIGHT_LINE_KM = 60;
-
-/** ORS only offers alternatives for point-to-point routes, same as OSRM. */
+/**
+ * ORS only offers alternatives for point-to-point routes, same as OSRM. The
+ * window itself lives in src/utils/routeProfile so the planner can tell the
+ * rider when picking a riding style will not change the road.
+ */
 export function wantsOrsAlternatives(
   coordinates: [number, number][],
   profile: RouteProfile
 ): boolean {
   return (
     profile !== 'fastest' &&
-    coordinates.length === 2 &&
-    haversineDistance(coordinates[0][1], coordinates[0][0], coordinates[1][1], coordinates[1][0]) <=
-      ALTERNATIVES_MAX_STRAIGHT_LINE_KM
+    curvatureRankingApplies(coordinates.map(([lng, lat]) => ({ lat, lng })))
   );
 }
 
@@ -234,11 +238,14 @@ async function routeViaOpenRouteService(
     throw new UpstreamError('OpenRouteService', 'Fant ingen rute mellom de valgte punktene');
   }
 
-  return buildRouteResponseFromOrsFeature(feature);
+  return buildRouteResponseFromOrsFeature(feature, profile);
 }
 
 /** Shared by point-to-point ORS routing and the round-trip loop generator below. */
-function buildRouteResponseFromOrsFeature(feature: OrsFeature): RouteResponse {
+export function buildRouteResponseFromOrsFeature(
+  feature: OrsFeature,
+  profile: RouteProfile
+): RouteResponse {
   // ORS returns [lng, lat, elevation] when elevation is requested.
   const coords = feature.geometry.coordinates;
   const polyline: [number, number][] = coords.map((c) => [c[1], c[0]]);
@@ -265,7 +272,7 @@ function buildRouteResponseFromOrsFeature(feature: OrsFeature): RouteResponse {
 
   const { summary } = feature.properties;
   const distanceKm = round1(summary.distance / 1000);
-  const durationMin = Math.round(summary.duration / 60);
+  const durationMin = estimatedDurationMin(summary.duration, profile);
 
   return {
     polyline,
@@ -414,7 +421,9 @@ async function routeViaOrsRoundTrip(
         throw new UpstreamError('OpenRouteService', 'Fant ingen rundtur fra denne posisjonen');
       }
 
-      const response = buildRouteResponseFromOrsFeature(feature);
+      // A generated loop is a curvy back-road ride by construction, and the
+      // planner switches the rider to that style when one comes back.
+      const response = buildRouteResponseFromOrsFeature(feature, 'curvy');
       response.notes.push(
         'Rundturen er generert automatisk og følger ikke nødvendigvis den mest opplagte veien — se over ruten før du kjører.'
       );
@@ -477,7 +486,7 @@ async function routeViaOsrm(
     : [];
 
   const distanceKm = round1(chosen.distance / 1000);
-  const durationMin = Math.round((chosen.duration / 60) * PACE_ADJUSTMENT[profile]);
+  const durationMin = estimatedDurationMin(chosen.duration, profile);
 
   return {
     polyline,

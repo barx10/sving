@@ -2,14 +2,15 @@ import React, { useEffect, useRef, useState } from 'react';
 import type { Notice, RouteProfile, Waypoint } from '../types';
 import { type PlaceResult, searchPlaces } from '../api';
 import { hasCoords } from '../utils/geo';
+import { curvatureRankingApplies } from '../utils/routeProfile';
 import {
   ArrowUpDown,
   Clock,
   Compass,
   Flame,
+  Info,
   Loader2,
   MapPin,
-  Mountain,
   Navigation,
   Plus,
   Repeat,
@@ -40,10 +41,19 @@ interface RouteEditorProps {
   isLoading: boolean;
 }
 
-const PROFILES: { id: RouteProfile; label: string; icon: React.ReactNode }[] = [
-  { id: 'curvy', label: 'Svingete veier', icon: <Flame className="w-4 h-4 mb-1 text-[#386641]" /> },
-  { id: 'scenic', label: 'Naturskjønn', icon: <Mountain className="w-4 h-4 mb-1 text-[#5C6B34]" /> },
-  { id: 'fastest', label: 'Raskeste', icon: <Zap className="w-4 h-4 mb-1 text-[#2D332A]" /> },
+const PROFILES: { id: RouteProfile; label: string; hint: string; icon: React.ReactNode }[] = [
+  {
+    id: 'curvy',
+    label: 'Svingete veier',
+    hint: 'Unngår motorvei og velger den mest svingete av rutene motoren tilbyr.',
+    icon: <Flame className="w-4 h-4 mb-1 text-[#386641]" />,
+  },
+  {
+    id: 'fastest',
+    label: 'Raskeste',
+    hint: 'Korteste kjøretid. Motorvei tillates hvis du slår av bryteren under.',
+    icon: <Zap className="w-4 h-4 mb-1 text-[#2D332A]" />,
+  },
 ];
 
 export const RouteEditor: React.FC<RouteEditorProps> = ({
@@ -70,6 +80,10 @@ export const RouteEditor: React.FC<RouteEditorProps> = ({
 
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchAbortRef = useRef<AbortController | null>(null);
+
+  const placed = waypoints.filter(hasCoords);
+  const placedCount = placed.length;
+  const rankingApplies = curvatureRankingApplies(placed);
 
   // Place search runs through our own server, which holds the identifying
   // User-Agent Nominatim asks for and caches repeat lookups.
@@ -214,13 +228,14 @@ export const RouteEditor: React.FC<RouteEditorProps> = ({
       {/* Riding style */}
       <div className="space-y-1.5">
         <span className="text-[10px] font-bold text-[#6B705C] uppercase tracking-wider">Rutepreferanse</span>
-        <div className="grid grid-cols-3 gap-2" role="group" aria-label="Rutepreferanse">
-          {PROFILES.map(({ id, label, icon }) => (
+        <div className="grid grid-cols-2 gap-2" role="group" aria-label="Rutepreferanse">
+          {PROFILES.map(({ id, label, hint, icon }) => (
             <button
               key={id}
               type="button"
               onClick={() => setProfile(id)}
               aria-pressed={profile === id}
+              title={hint}
               className={`flex flex-col items-center justify-center p-2.5 rounded-xl border text-xs font-bold transition ${
                 profile === id
                   ? 'bg-[#E9EDC9] border-[#CCD5AE] text-[#5C6B34] shadow-sm'
@@ -232,6 +247,22 @@ export const RouteEditor: React.FC<RouteEditorProps> = ({
             </button>
           ))}
         </div>
+
+        {/*
+          Being straight about how little this does on a long route. The engines
+          only offer alternatives to rank on a plain A-to-B request, so on
+          anything else "svingete" means avoiding motorways and nothing more.
+        */}
+        {profile === 'curvy' && placedCount >= 2 && !rankingApplies && (
+          <p className="flex items-start gap-1.5 text-[11px] text-[#6B705C] leading-relaxed pt-0.5">
+            <Info className="w-3.5 h-3.5 shrink-0 mt-px text-[#386641]" aria-hidden="true" />
+            <span>
+              {placedCount > 2
+                ? 'Med via-punkt får vi bare ett rutealternativ, så her betyr «svingete» at motorvei unngås — veivalget er rutemotorens.'
+                : 'På lange strekk får vi bare ett rutealternativ, så her betyr «svingete» at motorvei unngås — veivalget er rutemotorens.'}
+            </span>
+          </p>
+        )}
 
         <div className="mt-2.5 flex items-center justify-between p-2.5 rounded-xl bg-[#F9F9F7] border border-[#E0E0D6]">
           <span className="flex items-center gap-2">
