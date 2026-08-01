@@ -91,6 +91,27 @@ export interface HazardReport {
   generatedAt: string;
 }
 
+export type PoiCategory = 'fuel' | 'rest_area';
+
+/**
+ * A fuel station or rest area beside the route, from OpenStreetMap. Unlike the
+ * mountain passes this is live data, so a place that closed stops appearing.
+ */
+export interface PointOfInterest {
+  id: string;
+  category: PoiCategory;
+  name: string;
+  lat: number;
+  lng: number;
+  brand?: string;
+  openingHours?: string;
+  hasToilets?: boolean;
+  /** How far along the route it sits, in kilometres. Worked out client-side. */
+  distanceAlongKm?: number;
+  /** Detour from the road itself, in kilometres. */
+  detourKm?: number;
+}
+
 export interface SavedTour {
   id: string;
   title: string;

@@ -8,6 +8,7 @@ import { rateLimit } from './rateLimit.js';
 import { send } from './routes/respond.js';
 import { geocodeRouter } from './routes/geocode.js';
 import { hazardsRouter } from './routes/hazards.js';
+import { poisRouter } from './routes/pois.js';
 import { routeRouter } from './routes/route.js';
 import { routeNearbyRouter } from './routes/routeNearby.js';
 import { weatherRouter } from './routes/weather.js';
@@ -49,10 +50,25 @@ app.use(
   })
 );
 
+/**
+ * Overpass is stricter than the rest and answers with 429 rather than a queue,
+ * so the corridor search gets a tighter cap of its own on top of the general
+ * one. A rider opening the fuel tab on a handful of routes stays well under it.
+ */
+app.use(
+  '/api/pois',
+  rateLimit({
+    windowMs: 60_000,
+    max: 8,
+    message: 'For mange søk langs ruten. Vent et minutt og prøv igjen.',
+  })
+);
+
 app.use('/api/route', routeRouter);
 app.use('/api/route-nearby', routeNearbyRouter);
 app.use('/api/weather', weatherRouter);
 app.use('/api/hazards', hazardsRouter);
+app.use('/api/pois', poisRouter);
 app.use('/api/geocode', geocodeRouter);
 
 app.use('/api', (_req: Request, res: Response) => {

@@ -22,6 +22,14 @@ export const USER_AGENT = CONTACT
 export const OPENROUTESERVICE_API_KEY = process.env.OPENROUTESERVICE_API_KEY || '';
 
 /**
+ * Overpass instance used to find fuel and rest areas along a route. The public
+ * one is shared by the whole OSM world and enforces a per-IP slot limit, so a
+ * busy instance should point this at its own mirror rather than lean harder on
+ * overpass-api.de.
+ */
+export const OVERPASS_URL = process.env.OVERPASS_URL || 'https://overpass-api.de/api/interpreter';
+
+/**
  * Whether the optional configuration is present, as booleans rather than the
  * values themselves. /api/health reports these so a deployment can be checked
  * from outside without ever exposing the address or the key. Without this,

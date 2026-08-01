@@ -1,5 +1,5 @@
 {
   "name": "Sving - Norsk MC-turplanlegger",
-  "description": "Planlegg svingete og naturskjønne MC-turer i Norge, med høydeprofil, vær ved ankomst fra MET.no, veiledende status for fjelloverganger, GPX-eksport og delbare rutelenker.",
+  "description": "Planlegg svingete og naturskjønne MC-turer i Norge, med høydeprofil, vær ved ankomst fra MET.no, veiledende status for fjelloverganger, bensin og rasteplasser langs ruta, GPX-eksport og delbare rutelenker.",
   "requestFramePermissions": ["geolocation"]
 }

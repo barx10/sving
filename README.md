@@ -12,9 +12,11 @@ framme ved hvert punkt, og ta ruten med videre som GPX eller lenke.
 - **Vær ved ankomst** — henter varsel fra MET.no for det klokkeslettet du beregnes å være
   framme ved hvert sjekkpunkt, ikke for da du trykket på knappen. Flagger kulde, nedbør
   og vindkast.
-- **Fjelloverganger** — en sammenleggbar liste under «Beregn rute» viser typisk sesong
-  for de klassiske overgangene. Trykk på en overgang for å se den i kartet. Tydelig
-  merket som veiledende, med lenke til Statens vegvesen.
+- **Langs ruta** — ett sammenleggbart panel under «Beregn rute» med fjelloverganger,
+  bensinstasjoner og rasteplasser. Trykk på et sted for å se det i kartet.
+  Fjellovergangene viser typisk sesong, tydelig merket som veiledende og med lenke
+  til Statens vegvesen; bensin og rasteplasser hentes live fra OpenStreetMap i en
+  korridor langs ruta, og bare når du åpner fanen.
 - **Høydeprofil** — reell høydedata fra Copernicus DEM via Open-Meteo.
 - **Eksport** — GPX for Garmin/OsmAnd, deep links til Google Maps og Apple Maps, og en
   delbar lenke som inneholder hele ruten.
@@ -76,6 +78,7 @@ i stedet for å gjette:
 | Stedsnavn | Nominatim (OpenStreetMap) | Går via egen server med rate limiting og cache |
 | Kart | Kartverket og CARTO / OpenStreetMap | |
 | Fjelloverganger | Kuratert liste i `src/data/mountainPasses.ts` | **Ikke sanntid.** Beregnet fra typiske sesongdatoer |
+| Bensin og rasteplasser | OpenStreetMap via Overpass | Live, men bare så komplett som kartet er der du kjører. Hentes først når du åpner fanen |
 
 **Statusen for fjelloverganger er en kalendermodell, ikke et sanntidsvarsel.** En
 fjellovergang kan stenge på timers varsel. Sjekk alltid
