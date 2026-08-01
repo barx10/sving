@@ -12,8 +12,9 @@ framme ved hvert punkt, og ta ruten med videre som GPX eller lenke.
 - **Vær ved ankomst** — henter varsel fra MET.no for det klokkeslettet du beregnes å være
   framme ved hvert sjekkpunkt, ikke for da du trykket på knappen. Flagger kulde, nedbør
   og vindkast.
-- **Fjelloverganger** — viser typisk sesong for de klassiske overgangene, med tydelig
-  merking av at dette er veiledende og lenke til Statens vegvesen.
+- **Fjelloverganger** — en sammenleggbar liste under «Beregn rute» viser typisk sesong
+  for de klassiske overgangene. Trykk på en overgang for å se den i kartet. Tydelig
+  merket som veiledende, med lenke til Statens vegvesen.
 - **Høydeprofil** — reell høydedata fra Copernicus DEM via Open-Meteo.
 - **Eksport** — GPX for Garmin/OsmAnd, deep links til Google Maps og Apple Maps, og en
   delbar lenke som inneholder hele ruten.
