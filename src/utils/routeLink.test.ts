@@ -20,8 +20,36 @@ describe('route links', () => {
   });
 
   it('survives Norwegian characters in place names', () => {
-    const decoded = decodeRouteFromHash(encodeRouteToHash(waypoints, 'scenic', false));
+    const decoded = decodeRouteFromHash(encodeRouteToHash(waypoints, 'curvy', false));
     expect(decoded!.waypoints[0].name).toBe('Åndalsnes');
+  });
+
+  /**
+   * Links shared back when 'scenic' was still a separate style are out in group
+   * chats and must still open. It always produced the same route as 'curvy', so
+   * landing there is where those links effectively pointed all along.
+   */
+  it('opens a link from when scenic was still a separate style', () => {
+    const payload = {
+      v: 1,
+      p: 'scenic',
+      a: 1,
+      w: [
+        [62.5674, 7.6869, 'Åndalsnes'],
+        [62.1049, 7.2056, 'Geiranger'],
+      ],
+    };
+    const base64url = Buffer.from(JSON.stringify(payload))
+      .toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/, '');
+
+    const decoded = decodeRouteFromHash(`#tur=${base64url}`);
+
+    expect(decoded).not.toBeNull();
+    expect(decoded!.profile).toBe('curvy');
+    expect(decoded!.waypoints).toHaveLength(2);
   });
 
   it('preserves the avoid-motorways choice when it is off', () => {

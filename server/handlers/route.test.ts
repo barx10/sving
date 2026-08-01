@@ -4,7 +4,9 @@ import {
   type ElevationPoint,
   type OrsFeature,
   type OsrmRoute,
+  buildRouteResponseFromOrsFeature,
   elevationStats,
+  estimatedDurationMin,
   isRetryableRoundTripFailure,
   pickBestRoute,
   pickCurviestFeature,
@@ -129,6 +131,35 @@ describe('OpenRouteService profile', () => {
         'wheelchair',
       ]).toContain(profile);
     }
+  });
+});
+
+describe('estimated duration', () => {
+  it('slows a curvy route down from the car estimate', () => {
+    expect(estimatedDurationMin(60 * 60, 'curvy')).toBe(72);
+  });
+
+  it('leaves the fastest profile at the engine estimate', () => {
+    expect(estimatedDurationMin(60 * 60, 'fastest')).toBe(60);
+  });
+
+  /**
+   * The ORS path used to return ORS's raw car estimate while the OSRM path
+   * applied the pace adjustment, so the same tour was reported twenty percent
+   * quicker on an instance that happened to have a routing key configured.
+   */
+  it('applies the same pace to an ORS route as to an OSRM one', () => {
+    const feature: OrsFeature = {
+      geometry: { coordinates: twistyLine.map(([lat, lng]) => [lng, lat]) },
+      properties: { summary: { distance: 42_000, duration: 60 * 60 } },
+    };
+
+    const curvy = buildRouteResponseFromOrsFeature(feature, 'curvy');
+    const fastest = buildRouteResponseFromOrsFeature(feature, 'fastest');
+
+    expect(curvy.durationMin).toBe(estimatedDurationMin(60 * 60, 'curvy'));
+    expect(curvy.summary.durationMin).toBe(curvy.durationMin);
+    expect(fastest.durationMin).toBe(60);
   });
 });
 

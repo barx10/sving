@@ -7,8 +7,11 @@ framme ved hvert punkt, og ta ruten med videre som GPX eller lenke.
 
 ## Hva den gjør
 
-- **Ruting for MC** — velger rute etter hvor svingete den er (målt i grader retningsendring
-  per kilometer), ikke bare hvor lang den er. Kan unngå motorvei.
+- **Ruting for MC** — unngår motorvei, og rangerer rutealternativene etter hvor svingete
+  de er (grader retningsendring per kilometer), ikke etter hvor lange de er. Merk at
+  rutemotorene bare tilbyr alternativer å rangere på en enkel A-til-B-rute under
+  60 km i luftlinje. Utenfor det vinduet finnes det bare én rute, og «svingete» betyr
+  da at motorvei unngås — planleggeren sier fra når det er tilfellet.
 - **Vær ved ankomst** — henter varsel fra MET.no for det klokkeslettet du beregnes å være
   framme ved hvert sjekkpunkt, ikke for da du trykket på knappen. Flagger kulde, nedbør
   og vindkast.

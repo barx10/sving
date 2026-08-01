@@ -2,6 +2,7 @@ import React from 'react';
 import type { SavedTour } from '../types';
 import { useDismissableOverlay } from '../hooks/useDismissableOverlay';
 import { formatDate, formatDuration } from '../utils/format';
+import { normalizeProfile } from '../utils/routeProfile';
 import { ArrowRight, Bookmark, Clock, Gauge, Mountain, Trash2, X } from 'lucide-react';
 
 interface SavedToursDrawerProps {
@@ -14,7 +15,6 @@ interface SavedToursDrawerProps {
 
 const PROFILE_LABEL: Record<SavedTour['profile'], string> = {
   curvy: 'Svingete',
-  scenic: 'Naturskjønn',
   fastest: 'Raskeste',
 };
 
@@ -81,7 +81,8 @@ export const SavedToursDrawer: React.FC<SavedToursDrawerProps> = ({
                     </p>
                   </div>
                   <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-[#E9EDC9] text-[#5C6B34] border border-[#CCD5AE] shrink-0">
-                    {PROFILE_LABEL[tour.profile]}
+                    {/* Tours saved before the styles merged still say 'scenic'. */}
+                    {PROFILE_LABEL[normalizeProfile(tour.profile)]}
                   </span>
                 </div>
 

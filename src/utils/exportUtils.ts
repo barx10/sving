@@ -113,7 +113,7 @@ ${trackPoints}
 
 /**
  * Picks the handful of intermediate points that best pin a consumer navigation
- * app to the scenic route rather than its own idea of the fastest way.
+ * app to the route the rider planned rather than its own idea of the fastest way.
  *
  * Sharp direction changes are the useful ones: they are where a routing engine
  * would otherwise take a different road entirely.

@@ -6,7 +6,12 @@ export interface Waypoint {
   isCustom?: boolean;
 }
 
-export type RouteProfile = 'curvy' | 'scenic' | 'fastest';
+/**
+ * 'scenic' was a third style until it turned out to be 'curvy' under another
+ * name. Links and saved tours from then are normalised on the way in — see
+ * utils/routeProfile.
+ */
+export type RouteProfile = 'curvy' | 'fastest';
 
 export interface RouteSummary {
   distanceKm: number;
