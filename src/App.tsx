@@ -27,6 +27,7 @@ import { cumulativeDistancesKm, hasCoords, haversineDistance } from './utils/geo
 import { pickWeatherFractions } from './utils/weatherCheckpoints';
 import { orderAlongRoute, sampleRouteForPois } from './utils/pois';
 import { decodeRouteFromHash, encodeRouteToHash } from './utils/routeLink';
+import { routeSignatureOf } from './utils/routeSignature';
 import { Header } from './components/Header';
 import { RouteEditor } from './components/RouteEditor';
 import { MapView } from './components/MapView';
@@ -67,6 +68,9 @@ function toDateTimeLocal(date: Date): string {
   )}:${pad(date.getMinutes())}`;
 }
 
+/** Long enough to swallow a burst of map clicks, short enough to feel immediate. */
+const AUTO_ROUTE_DEBOUNCE_MS = 350;
+
 export default function App() {
   const [waypoints, setWaypoints] = useState<Waypoint[]>(emptyWaypoints);
   const [profile, setProfile] = useState<RouteProfile>('curvy');
@@ -88,6 +92,8 @@ export default function App() {
   const [poiError, setPoiError] = useState<string | null>(null);
 
   const [isLoadingRoute, setIsLoadingRoute] = useState(false);
+  /** Shown in the planner's status line, next to the button that retries it. */
+  const [routeError, setRouteError] = useState<string | null>(null);
   const [isLoadingWeather, setIsLoadingWeather] = useState(false);
   const [isSuggestingLocation, setIsSuggestingLocation] = useState(false);
   const [notices, setNotices] = useState<Notice[]>([]);
@@ -110,6 +116,21 @@ export default function App() {
   const routeRequestRef = useRef<AbortController | null>(null);
   const poiRequestRef = useRef<AbortController | null>(null);
   const mapSectionRef = useRef<HTMLDivElement>(null);
+
+  /**
+   * The route the auto-routing effect has already asked for. Anything that
+   * produces a route by other means — the nearby-loop generator — writes its
+   * signature here so the effect does not immediately overwrite it with a plain
+   * A-to-B route between the same two points.
+   */
+  const routedSignatureRef = useRef<string | null>(null);
+  /**
+   * Read by the auto-routing effect without subscribing to it: the departure
+   * time only decides which forecast hour to ask for, and changing it already
+   * refreshes the weather on its own.
+   */
+  const departureTimeRef = useRef(departureTime);
+  departureTimeRef.current = departureTime;
 
   const savedTours = useLiveQuery(() => db.tours.orderBy('createdAt').reverse().toArray()) || [];
 
@@ -237,7 +258,9 @@ export default function App() {
       const controller = new AbortController();
       routeRequestRef.current = controller;
 
+      routedSignatureRef.current = routeSignatureOf(placed, currentProfile, currentAvoidHighways);
       setIsLoadingRoute(true);
+      setRouteError(null);
 
       try {
         const result = await fetchRoute(placed, currentProfile, currentAvoidHighways, controller.signal);
@@ -255,9 +278,9 @@ export default function App() {
         void loadWeather(result, placed, Number.isNaN(departure.getTime()) ? new Date() : departure);
       } catch (err) {
         if (controller.signal.aborted) return;
-        const message =
-          err instanceof ApiError ? err.message : 'Kunne ikke beregne MC-rute. Prøv igjen.';
-        pushNotice('error', message);
+        // The planner's status line owns this one: it sits where the rider is
+        // looking and carries the retry button, so a toast would only repeat it.
+        setRouteError(err instanceof ApiError ? err.message : 'Kunne ikke beregne MC-rute.');
       } finally {
         if (routeRequestRef.current === controller) {
           setIsLoadingRoute(false);
@@ -265,8 +288,48 @@ export default function App() {
         }
       }
     },
-    [loadWeather, resetPois, pushNotice]
+    [loadWeather, resetPois]
   );
+
+  /**
+   * Routes calculate themselves. Every path into the planner — a map click, a
+   * search hit, a preset, a shared link, a changed preference — lands in these
+   * three pieces of state, so watching them covers the lot and there is nothing
+   * left for the rider to press.
+   */
+  const placedWaypoints = useMemo(() => waypoints.filter(hasCoords), [waypoints]);
+  const routeSignature = routeSignatureOf(placedWaypoints, profile, avoidHighways);
+
+  useEffect(() => {
+    if (placedWaypoints.length < 2) return;
+    if (routedSignatureRef.current === routeSignature) return;
+
+    const timer = setTimeout(
+      () => void calculateRoute(placedWaypoints, profile, avoidHighways, departureTimeRef.current),
+      AUTO_ROUTE_DEBOUNCE_MS
+    );
+    return () => clearTimeout(timer);
+  }, [routeSignature, placedWaypoints, profile, avoidHighways, calculateRoute]);
+
+  /** Dropping below two points leaves nothing to draw — clear rather than lie. */
+  useEffect(() => {
+    if (placedWaypoints.length >= 2) return;
+
+    routedSignatureRef.current = null;
+    if (!route) return;
+
+    routeRequestRef.current?.abort();
+    setRoute(null);
+    setWeather([]);
+    setRouteError(null);
+    resetPois();
+  }, [placedWaypoints, route, resetPois]);
+
+  /** After a failed attempt the signature is unchanged, so retrying needs a nudge. */
+  const handleRetryRoute = useCallback(() => {
+    routedSignatureRef.current = null;
+    void calculateRoute(placedWaypoints, profile, avoidHighways, departureTime);
+  }, [placedWaypoints, profile, avoidHighways, departureTime, calculateRoute]);
 
   /* ---------------------------------------------------------------- */
   /* Startup: shared link + mountain pass status                       */
@@ -286,13 +349,7 @@ export default function App() {
     setProfile(shared.profile);
     setAvoidHighways(shared.avoidHighways);
     pushNotice('info', 'Delt rute lastet inn.');
-    void calculateRoute(
-      shared.waypoints,
-      shared.profile,
-      shared.avoidHighways,
-      toDateTimeLocal(nextWholeHour())
-    );
-  }, [calculateRoute, pushNotice]);
+  }, [pushNotice]);
 
   useEffect(() => {
     loadSharedRoute();
@@ -326,8 +383,8 @@ export default function App() {
     (lat: number, lng: number) => {
       const placeholder = `Kartpunkt (${lat.toFixed(3)}, ${lng.toFixed(3)})`;
 
-      // Build the next list synchronously so the route request below always
-      // sees exactly what the user just placed, even on rapid clicks.
+      // Fill the first empty row if there is one, otherwise slot the point in
+      // just before the finish — a click is a via point once A and B are set.
       const emptyIndex = waypoints.findIndex((wp) => !hasCoords(wp));
       let next: Waypoint[];
       let targetId: string;
@@ -346,12 +403,8 @@ export default function App() {
 
       setWaypoints(next);
       void nameWaypointFromCoords(targetId, lat, lng);
-
-      if (next.filter(hasCoords).length >= 2) {
-        void calculateRoute(next, profile, avoidHighways, departureTime);
-      }
     },
-    [waypoints, profile, avoidHighways, departureTime, calculateRoute, nameWaypointFromCoords]
+    [waypoints, nameWaypointFromCoords]
   );
 
   const handleClearWaypoints = useCallback(() => {
@@ -359,6 +412,7 @@ export default function App() {
     setWaypoints(emptyWaypoints());
     setRoute(null);
     setWeather([]);
+    setRouteError(null);
     setNotices([]);
     resetPois();
     window.history.replaceState(null, '', window.location.pathname + window.location.search);
@@ -401,10 +455,7 @@ export default function App() {
         : [...waypoints, returnWaypoint];
 
     setWaypoints(next);
-    if (next.filter(hasCoords).length >= 2) {
-      void calculateRoute(next, profile, avoidHighways, departureTime);
-    }
-  }, [waypoints, profile, avoidHighways, departureTime, calculateRoute, pushNotice]);
+  }, [waypoints, pushNotice]);
 
   /* ---------------------------------------------------------------- */
   /* Presets, geolocation and saved tours                              */
@@ -431,9 +482,8 @@ export default function App() {
       setWaypoints(next);
       setProfile('curvy');
       setAvoidHighways(true);
-      void calculateRoute(next, 'curvy', true, departureTime);
     },
-    [userCoords, departureTime, calculateRoute]
+    [userCoords]
   );
 
   const handleSuggestNearby = useCallback(() => {
@@ -490,7 +540,13 @@ export default function App() {
         { id: `loop_start_${stamp}`, name: 'Din posisjon (start)', ...userCoords },
         { id: `loop_end_${stamp}`, name: 'Din posisjon (slutt)', ...userCoords },
       ];
+
+      // The loop came from its own endpoint, so tell the auto-routing effect the
+      // two points are already handled — otherwise it would replace the round
+      // trip with an empty A-to-A route between start and finish.
+      routedSignatureRef.current = routeSignatureOf(loopWaypoints, 'curvy', true);
       setWaypoints(loopWaypoints);
+      setRouteError(null);
       setNotices((prev) => prev.filter((n) => n.tone !== 'error'));
 
       const hash = encodeRouteToHash(loopWaypoints, 'curvy', true);
@@ -534,9 +590,8 @@ export default function App() {
       setProfile(tour.profile);
       setAvoidHighways(avoid);
       setIsSavedOpen(false);
-      void calculateRoute(tour.waypoints, tour.profile, avoid, departureTime);
     },
-    [departureTime, calculateRoute]
+    []
   );
 
   const handleDeleteTour = useCallback(async (id: string) => {
@@ -643,11 +698,13 @@ export default function App() {
               setAvoidHighways={setAvoidHighways}
               departureTime={departureTime}
               setDepartureTime={handleDepartureChange}
-              onCalculateRoute={() => calculateRoute(waypoints, profile, avoidHighways, departureTime)}
               onClearWaypoints={handleClearWaypoints}
               onMakeRoundTrip={handleMakeRoundTrip}
               onSuggestNearby={handleSuggestNearby}
               onNotify={pushNotice}
+              onRetryRoute={handleRetryRoute}
+              summary={route?.summary ?? null}
+              routeError={routeError}
               isSuggestingLocation={isSuggestingLocation}
               isLoading={isLoadingRoute}
             />

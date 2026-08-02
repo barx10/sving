@@ -206,11 +206,23 @@ export const MapView: React.FC<MapViewProps> = ({
 
   return (
     <div className="relative w-full h-full min-h-[380px] rounded-2xl overflow-hidden border border-[#E0E0D6] shadow-md bg-[#E5E9EC]">
-      <div className="absolute top-3 left-3 z-[1000] flex items-center gap-2 bg-[#2D332A]/90 text-white text-xs font-semibold px-3 py-1.5 rounded-xl border border-white/20 shadow-md backdrop-blur-md">
-        <MousePointerClick className="w-4 h-4 text-[#A7C957]" />
-        <span className="hidden sm:inline">Klikk i kartet for å sette punkter</span>
-        <span className="sm:hidden">Klikk i kart</span>
-      </div>
+      {/*
+        Bottom centre, not the top-left corner: that corner belongs to Leaflet's
+        zoom control, and a chip parked on top of it swallowed every click on the
+        plus button. It is also pointer-transparent and disappears once the rider
+        has the two points needed for a route, so it never gets in the way.
+      */}
+      {placedWaypoints.length < 2 && (
+        <div className="pointer-events-none absolute bottom-8 left-1/2 -translate-x-1/2 z-[1000] flex items-center gap-2 bg-[#2D332A]/90 text-white text-xs font-semibold px-3 py-1.5 rounded-xl border border-white/20 shadow-md backdrop-blur-md">
+          <MousePointerClick className="w-4 h-4 text-[#A7C957] shrink-0" />
+          <span className="hidden sm:inline">
+            {placedWaypoints.length === 0
+              ? 'Klikk i kartet for å sette start og mål'
+              : 'Klikk i kartet for å sette målet'}
+          </span>
+          <span className="sm:hidden">Klikk i kart</span>
+        </div>
+      )}
 
       <div className="absolute top-3 right-3 z-[1000] flex flex-wrap items-center gap-1.5 bg-white/95 backdrop-blur-md p-1.5 rounded-xl border border-[#E0E0D6] shadow-md text-xs">
         <div className="flex items-center gap-1 bg-[#F9F9F7] p-0.5 rounded-lg border border-[#E0E0D6]">
