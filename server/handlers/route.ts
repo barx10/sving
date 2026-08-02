@@ -23,11 +23,31 @@ const ELEVATION_SAMPLES = 75;
  * posted limit. On the kind of road this app deliberately seeks out, a real
  * rider is slower than that. This is an estimate and is labelled as one — it
  * also excludes ferry waits, fuel and coffee.
+ *
+ * The adjustment used to be keyed to the riding style the rider picked, so the
+ * very same road was reported twenty percent slower under "Svingete veier" than
+ * under "Raskeste". On a long route — where there is only ever one route to be
+ * had — the distance and the line on the map stayed put while the time jumped,
+ * and a rider comparing the two read that as invented. Fairly.
+ *
+ * A road takes as long as it takes. The pace follows the route's own measured
+ * curvature, so the same road always gets the same estimate, and a genuinely
+ * twistier alternative is genuinely slower.
  */
-const PACE_ADJUSTMENT: Record<RouteProfile, number> = {
-  curvy: 1.2,
-  fastest: 1.0,
-};
+const STRAIGHT_DEG_PER_KM = 50;
+const TWISTY_DEG_PER_KM = 250;
+const MAX_PACE_ADJUSTMENT = 1.2;
+
+/**
+ * Degrees of heading change per kilometre, mapped to how much slower than the
+ * car estimate to call it. A motorway sits near 20°/km and gets no adjustment;
+ * a measured fjord-valley road over a pass — Åndalsnes to Valldal comes back at
+ * 251 — gets the full one. In between it scales evenly rather than stepping.
+ */
+export function paceAdjustment(curvatureDegPerKm: number): number {
+  const share = (curvatureDegPerKm - STRAIGHT_DEG_PER_KM) / (TWISTY_DEG_PER_KM - STRAIGHT_DEG_PER_KM);
+  return 1 + Math.min(1, Math.max(0, share)) * (MAX_PACE_ADJUSTMENT - 1);
+}
 
 /**
  * Every route's estimated time goes through here, whichever engine produced it.
@@ -36,8 +56,8 @@ const PACE_ADJUSTMENT: Record<RouteProfile, number> = {
  * ORS's raw car estimate, so the same tour was reported twenty percent quicker
  * on an instance that had a routing key than on one that fell back to OSRM.
  */
-export function estimatedDurationMin(rawSeconds: number, profile: RouteProfile): number {
-  return Math.round((rawSeconds / 60) * PACE_ADJUSTMENT[profile]);
+export function estimatedDurationMin(rawSeconds: number, curvatureDegPerKm: number): number {
+  return Math.round((rawSeconds / 60) * paceAdjustment(curvatureDegPerKm));
 }
 
 export interface ElevationPoint {
@@ -238,14 +258,17 @@ async function routeViaOpenRouteService(
     throw new UpstreamError('OpenRouteService', 'Fant ingen rute mellom de valgte punktene');
   }
 
-  return buildRouteResponseFromOrsFeature(feature, profile);
+  return buildRouteResponseFromOrsFeature(feature);
 }
 
-/** Shared by point-to-point ORS routing and the round-trip loop generator below. */
-export function buildRouteResponseFromOrsFeature(
-  feature: OrsFeature,
-  profile: RouteProfile
-): RouteResponse {
+/**
+ * Shared by point-to-point ORS routing and the round-trip loop generator below.
+ *
+ * Deliberately knows nothing about the riding style: a route is a road, and
+ * which button asked for it cannot change how long it takes to ride. The style
+ * decides which route we end up here with, not what we say about it.
+ */
+export function buildRouteResponseFromOrsFeature(feature: OrsFeature): RouteResponse {
   // ORS returns [lng, lat, elevation] when elevation is requested.
   const coords = feature.geometry.coordinates;
   const polyline: [number, number][] = coords.map((c) => [c[1], c[0]]);
@@ -272,7 +295,8 @@ export function buildRouteResponseFromOrsFeature(
 
   const { summary } = feature.properties;
   const distanceKm = round1(summary.distance / 1000);
-  const durationMin = estimatedDurationMin(summary.duration, profile);
+  const curvature = Math.round(curvatureDegPerKm(polyline));
+  const durationMin = estimatedDurationMin(summary.duration, curvature);
 
   return {
     polyline,
@@ -283,7 +307,7 @@ export function buildRouteResponseFromOrsFeature(
       distanceKm,
       durationMin,
       ...elevationStats(elevations ? elevationPoints : null),
-      curvatureDegPerKm: Math.round(curvatureDegPerKm(polyline)),
+      curvatureDegPerKm: curvature,
     },
     sources: {
       routing: 'OpenRouteService',
@@ -456,7 +480,7 @@ async function routeViaOrsRoundTrip(
 
       // A generated loop is a curvy back-road ride by construction, and the
       // planner switches the rider to that style when one comes back.
-      const response = buildRouteResponseFromOrsFeature(feature, 'curvy');
+      const response = buildRouteResponseFromOrsFeature(feature);
       response.notes.push(
         'Rundturen er generert automatisk og følger ikke nødvendigvis den mest opplagte veien — se over ruten før du kjører.'
       );
@@ -527,7 +551,8 @@ async function routeViaOsrm(
     : [];
 
   const distanceKm = round1(chosen.distance / 1000);
-  const durationMin = estimatedDurationMin(chosen.duration, profile);
+  const curvature = Math.round(curvatureDegPerKm(polyline));
+  const durationMin = estimatedDurationMin(chosen.duration, curvature);
 
   return {
     polyline,
@@ -538,7 +563,7 @@ async function routeViaOsrm(
       distanceKm,
       durationMin,
       ...elevationStats(elevation ? elevationPoints : null),
-      curvatureDegPerKm: Math.round(curvatureDegPerKm(polyline)),
+      curvatureDegPerKm: curvature,
     },
     sources: { routing: 'OSRM', elevation: elevation?.source ?? null },
     notes: buildNotes(elevation !== null),
