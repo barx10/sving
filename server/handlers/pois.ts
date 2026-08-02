@@ -1,5 +1,5 @@
 import { TtlCache } from '../cache.js';
-import { OVERPASS_URL } from '../config.js';
+import { OVERPASS_URLS } from '../config.js';
 import { UpstreamError, createThrottle, fetchJson } from '../upstream.js';
 import { isValidCoord } from '../../src/utils/geo.js';
 import { badRequest, type ApiResult } from './apiResult.js';
@@ -31,8 +31,32 @@ const poiCache = new TtlCache<PointOfInterest[]>(6 * 60 * 60 * 1000, 200);
  * fewer. On serverless hosting this only spans one warm instance, which is the
  * same caveat the Nominatim throttle carries — the cache above is what keeps
  * the total call volume down across instances.
+ *
+ * One throttle per instance: the slot allowance is per instance, so a failover
+ * query should not have to wait out the gap owed to the instance that just
+ * failed us.
  */
-const throttleOverpass = createThrottle(1500);
+const throttles = new Map<string, ReturnType<typeof createThrottle>>();
+
+function throttleFor(url: string) {
+  let throttle = throttles.get(url);
+  if (!throttle) {
+    throttle = createThrottle(1500);
+    throttles.set(url, throttle);
+  }
+  return throttle;
+}
+
+/**
+ * Worth asking the next instance about. 429 is a slot allowance we have spent,
+ * 502/503/504 is an instance under load, and a missing status is our own
+ * timeout — none of them say anything about the query itself. A 400 does, and
+ * would fail exactly the same way everywhere else, so it stops here.
+ */
+function worthAnotherInstance(err: unknown): boolean {
+  if (!(err instanceof UpstreamError)) return false;
+  return err.status === undefined || [429, 502, 503, 504].includes(err.status);
+}
 
 /** In-flight lookups, so a popular route costs one Overpass query, not five. */
 const inFlight = new Map<string, Promise<PointOfInterest[]>>();
@@ -148,17 +172,43 @@ function dedupe(pois: PointOfInterest[]): PointOfInterest[] {
   });
 }
 
+/**
+ * Long enough to outlast the [timeout:25] Overpass gives itself — cutting a
+ * query short abandons work the instance is still paying to run — and short
+ * enough that two attempts plus overhead fit inside the function's own budget.
+ * An instance that has not answered by now has stopped working on it.
+ */
+const ATTEMPT_TIMEOUT_MS = 28_000;
+
 async function lookup(points: [number, number][]): Promise<PointOfInterest[]> {
-  const url = `${OVERPASS_URL}?data=${encodeURIComponent(buildQuery(points))}`;
+  const query = encodeURIComponent(buildQuery(points));
+  let lastError: unknown;
 
-  // Overpass' own [timeout:25] is the server-side budget; ours has to outlast
-  // it, or we abandon queries it is still paying to run.
-  const data = await throttleOverpass(() =>
-    fetchJson<OverpassResponse>('Overpass', url, { timeoutMs: 30_000 })
-  );
+  for (const [index, instance] of OVERPASS_URLS.entries()) {
+    try {
+      const data = await throttleFor(instance)(() =>
+        fetchJson<OverpassResponse>('Overpass', `${instance}?data=${query}`, {
+          timeoutMs: ATTEMPT_TIMEOUT_MS,
+        })
+      );
 
-  const elements = Array.isArray(data.elements) ? data.elements : [];
-  return dedupe(elements.map(toPointOfInterest).filter((poi): poi is PointOfInterest => poi !== null));
+      const elements = Array.isArray(data.elements) ? data.elements : [];
+      return dedupe(
+        elements.map(toPointOfInterest).filter((poi): poi is PointOfInterest => poi !== null)
+      );
+    } catch (err) {
+      lastError = err;
+
+      const isLast = index === OVERPASS_URLS.length - 1;
+      if (isLast || !worthAnotherInstance(err)) throw err;
+
+      console.warn(
+        `[pois] ${err instanceof Error ? err.message : err} — prøver neste Overpass-instans`
+      );
+    }
+  }
+
+  throw lastError;
 }
 
 /**

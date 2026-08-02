@@ -22,12 +22,36 @@ export const USER_AGENT = CONTACT
 export const OPENROUTESERVICE_API_KEY = process.env.OPENROUTESERVICE_API_KEY || '';
 
 /**
- * Overpass instance used to find fuel and rest areas along a route. The public
- * one is shared by the whole OSM world and enforces a per-IP slot limit, so a
- * busy instance should point this at its own mirror rather than lean harder on
- * overpass-api.de.
+ * Overpass instances used to find fuel and rest areas along a route, tried in
+ * order until one answers. The public ones are shared by the whole OSM world
+ * and enforce a per-IP slot limit, so an operator with real traffic should
+ * point this at their own mirror rather than lean harder on overpass-api.de.
+ *
+ * There are two by default because overpass-api.de under load answers a
+ * perfectly good query with 504 — seen in production, where the identical query
+ * succeeded a minute later. A second instance is only ever contacted after the
+ * first has already failed, so this costs the mirrors nothing in the normal case.
+ *
+ * OVERPASS_URLS takes a comma-separated list; the older single-valued
+ * OVERPASS_URL still works and is then the only instance used, since an
+ * operator naming their own mirror has not asked us to fall back to public ones.
  */
-export const OVERPASS_URL = process.env.OVERPASS_URL || 'https://overpass-api.de/api/interpreter';
+const DEFAULT_OVERPASS_URLS = [
+  'https://overpass-api.de/api/interpreter',
+  'https://overpass.kumi.systems/api/interpreter',
+];
+
+function configuredOverpassUrls(): string[] {
+  const list = (process.env.OVERPASS_URLS || '')
+    .split(',')
+    .map((url) => url.trim())
+    .filter(Boolean);
+
+  if (list.length > 0) return list;
+  return process.env.OVERPASS_URL ? [process.env.OVERPASS_URL] : DEFAULT_OVERPASS_URLS;
+}
+
+export const OVERPASS_URLS = configuredOverpassUrls();
 
 /**
  * Whether the optional configuration is present, as booleans rather than the

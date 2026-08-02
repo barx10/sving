@@ -229,6 +229,25 @@ describe('isRetryableRoundTripFailure', () => {
   it('does not retry an error that never reached ORS', () => {
     expect(isRetryableRoundTripFailure(new Error('network down'))).toBe(false);
   });
+
+  // Generating a loop with elevation is slow work that sometimes overruns.
+  // Giving up the remaining attempts over one slow answer threw away the very
+  // retries that make this feature work at all.
+  it('retries a timeout, which costs an attempt but says nothing about the loop', () => {
+    expect(
+      isRetryableRoundTripFailure(
+        new UpstreamError('OpenRouteService', 'OpenRouteService svarte ikke innen 10 sekunder')
+      )
+    ).toBe(true);
+  });
+
+  it('retries our own "found no loop", since a fresh seed may well find one', () => {
+    expect(
+      isRetryableRoundTripFailure(
+        new UpstreamError('OpenRouteService', 'Fant ingen rundtur fra denne posisjonen')
+      )
+    ).toBe(true);
+  });
 });
 
 describe('pickSampleIndices', () => {

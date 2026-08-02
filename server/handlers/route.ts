@@ -352,7 +352,22 @@ export async function handleNearbyRouteRequest(payload: unknown): Promise<ApiRes
     return { status: 200, body: result };
   } catch (err) {
     if (err instanceof UpstreamError) {
-      console.warn(`[route] nearby loop: ${err.message}`);
+      console.warn(`[route] nearby loop: ${err.message}${err.detail ? ` — ORS: ${err.detail}` : ''}`);
+
+      // Every attempt exhausted, at four different lengths. Repeating the
+      // upstream status back at the rider tells them nothing they can act on;
+      // what they can act on is a different length or a different starting
+      // point, which is what actually gets a loop out of narrow terrain.
+      if (isRetryableRoundTripFailure(err)) {
+        return {
+          status: 502,
+          body: {
+            error:
+              'Fant ingen rundtur herfra. Rundturer lages av en eksperimentell tjeneste som ofte kommer til kort i trange veinett — prøv en annen lengde, eller start et sted med flere veivalg.',
+          },
+        };
+      }
+
       return { status: 502, body: { error: `Kunne ikke lage rundtur: ${err.message}` } };
     }
     console.error('[route] nearby loop unexpected error:', err);
@@ -375,10 +390,25 @@ const ROUND_TRIP_ATTEMPTS = 4;
  * only be a transient blip on ORS's own infrastructure, never a real "this
  * endpoint doesn't exist". Anything else (401/403 key problems, 429 rate
  * limits, 400 bad requests) is a real problem worth surfacing immediately.
+ *
+ * A failure with no status at all — our own timeout, a dropped connection, or
+ * ORS returning a loop-less answer — is retryable too. Generating a loop is
+ * slow work that sometimes overruns, and abandoning the remaining attempts over
+ * one slow response threw away the very retries that make this feature work.
  */
 export function isRetryableRoundTripFailure(err: unknown): boolean {
-  return err instanceof UpstreamError && (err.status === 500 || err.status === 404);
+  if (!(err instanceof UpstreamError)) return false;
+  return err.status === undefined || err.status === 500 || err.status === 404;
 }
+
+/**
+ * Length multipliers, one per attempt. Four rolls of the same die is a single
+ * experiment repeated; nudging the target length gives ORS's algorithm a
+ * materially different problem each time, which is what a constrained road
+ * network — a fjord valley with two ways out — actually needs. The first
+ * attempt asks for exactly what the rider picked.
+ */
+const ROUND_TRIP_LENGTH_FACTORS = [1, 0.85, 1.2, 0.7];
 
 async function routeViaOrsRoundTrip(
   lat: number,
@@ -388,6 +418,7 @@ async function routeViaOrsRoundTrip(
   let lastErr: unknown;
 
   for (let attempt = 1; attempt <= ROUND_TRIP_ATTEMPTS; attempt++) {
+    const lengthM = Math.round(radiusKm * 1000 * ROUND_TRIP_LENGTH_FACTORS[attempt - 1]);
     const body = {
       coordinates: [[lng, lat]],
       elevation: true,
@@ -395,7 +426,7 @@ async function routeViaOrsRoundTrip(
       options: {
         avoid_features: ['highways', 'tollways'],
         round_trip: {
-          length: Math.round(radiusKm * 1000),
+          length: lengthM,
           points: LOOP_ROUND_TRIP_POINTS,
           // A fresh seed every attempt: asking again is how ORS's own
           // randomised algorithm gets another chance to find a valid loop.
@@ -412,7 +443,9 @@ async function routeViaOrsRoundTrip(
           method: 'POST',
           body,
           headers: { Authorization: OPENROUTESERVICE_API_KEY, Accept: 'application/geo+json' },
-          timeoutMs: 6_000,
+          // Building a loop with elevation is real work, and 6 seconds cut off
+          // answers that were still coming — every one of which cost an attempt.
+          timeoutMs: 10_000,
         }
       );
 
@@ -431,7 +464,15 @@ async function routeViaOrsRoundTrip(
     } catch (err) {
       lastErr = err;
       if (!isRetryableRoundTripFailure(err)) throw err;
-      console.warn(`[route] nearby loop attempt ${attempt}/${ROUND_TRIP_ATTEMPTS} failed, retrying:`, err);
+
+      // ORS's own explanation, not just the status — a bare "svarte 500" is
+      // what made the last round of these impossible to tell apart.
+      const detail = err instanceof UpstreamError && err.detail ? ` — ORS: ${err.detail}` : '';
+      console.warn(
+        `[route] nearby loop attempt ${attempt}/${ROUND_TRIP_ATTEMPTS} (${Math.round(lengthM / 1000)} km) failed: ${
+          err instanceof Error ? err.message : err
+        }${detail}`
+      );
     }
   }
 
