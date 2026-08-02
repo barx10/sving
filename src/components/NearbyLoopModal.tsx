@@ -34,8 +34,14 @@ export const NearbyLoopModal: React.FC<NearbyLoopModalProps> = ({
     subtitle="Velg hvor langt du vil kjøre — vi finner en svingete vei tilbake til start"
     icon={<MapPin className="w-5 h-5" />}
   >
+    {/*
+      "Radius" was the wrong word: the number is sent to the routing engine as
+      the length of the loop, so 40 km has always produced a ~40 km round trip
+      rather than one reaching 40 km out. The behaviour was right; the label
+      was not. (The wire field is still called radiusKm, for older clients.)
+    */}
     <div className="space-y-2">
-      <span className="text-xs font-bold text-[#6B705C]">Radius</span>
+      <span className="text-xs font-bold text-[#6B705C]">Lengde på turen</span>
       <div className="flex flex-wrap gap-2">
         {RADIUS_OPTIONS_KM.map((km) => (
           <button

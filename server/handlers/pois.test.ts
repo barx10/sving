@@ -185,7 +185,7 @@ describe('handlePoisRequest against Overpass', () => {
 
   it('does not cache a failure, so a retry can actually retry', async () => {
     const { UpstreamError } = await import('../upstream.js');
-    fetchJson.mockRejectedValueOnce(new UpstreamError('Overpass', 'Overpass svarte 504', 504));
+    fetchJson.mockRejectedValue(new UpstreamError('Overpass', 'Overpass svarte 504', 504));
     const points = [
       [63.3, 8.3],
       [63.4, 8.4],
@@ -193,7 +193,73 @@ describe('handlePoisRequest against Overpass', () => {
 
     expect((await handlePoisRequest({ points })).status).toBe(502);
 
-    fetchJson.mockResolvedValueOnce({ elements: [] });
+    fetchJson.mockReset();
+    fetchJson.mockResolvedValue({ elements: [] });
     expect((await handlePoisRequest({ points })).status).toBe(200);
+  });
+});
+
+/**
+ * Seen in production: overpass-api.de under load answered a perfectly good
+ * query with 504, and the identical query succeeded a minute later. Asking a
+ * second instance costs nothing until the first has already failed.
+ */
+describe('handlePoisRequest across Overpass instances', () => {
+  beforeEach(() => {
+    fetchJson.mockReset();
+  });
+
+  const urlsAsked = () => fetchJson.mock.calls.map((call) => String(call[1]).split('?')[0]);
+
+  it('asks the next instance when the first one is under load', async () => {
+    const { UpstreamError } = await import('../upstream.js');
+    fetchJson
+      .mockRejectedValueOnce(new UpstreamError('Overpass', 'Overpass svarte 504', 504))
+      .mockResolvedValueOnce({
+        elements: [{ type: 'node', id: 9, lat: 64.1, lon: 9.1, tags: { amenity: 'fuel' } }],
+      });
+
+    const result = await handlePoisRequest({
+      points: [
+        [64.1, 9.1],
+        [64.2, 9.2],
+      ],
+    });
+
+    expect(result.status).toBe(200);
+    expect(poisIn(result)).toHaveLength(1);
+
+    const asked = urlsAsked();
+    expect(asked).toHaveLength(2);
+    expect(new Set(asked).size).toBe(2);
+  });
+
+  it('asks the next instance when the first one has no slot left for us', async () => {
+    const { UpstreamError } = await import('../upstream.js');
+    fetchJson
+      .mockRejectedValueOnce(new UpstreamError('Overpass', 'Overpass svarte 429', 429))
+      .mockResolvedValueOnce({ elements: [] });
+
+    expect((await handlePoisRequest({ points: [[64.3, 9.3], [64.4, 9.4]] })).status).toBe(200);
+    expect(fetchJson).toHaveBeenCalledTimes(2);
+  });
+
+  /** A rejected query is rejected everywhere; shopping it around is just load. */
+  it('does not shop a bad query around the mirrors', async () => {
+    const { UpstreamError } = await import('../upstream.js');
+    fetchJson.mockRejectedValue(new UpstreamError('Overpass', 'Overpass svarte 400', 400));
+
+    expect((await handlePoisRequest({ points: [[64.5, 9.5], [64.6, 9.6]] })).status).toBe(502);
+    expect(fetchJson).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports the failure once every instance has been asked', async () => {
+    const { UpstreamError } = await import('../upstream.js');
+    fetchJson.mockRejectedValue(new UpstreamError('Overpass', 'Overpass svarte 429', 429));
+
+    const result = await handlePoisRequest({ points: [[64.7, 9.7], [64.8, 9.8]] });
+
+    expect(result.status).toBe(503);
+    expect(fetchJson.mock.calls.length).toBeGreaterThan(1);
   });
 });

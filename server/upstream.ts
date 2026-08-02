@@ -7,10 +7,48 @@ export class UpstreamError extends Error {
   constructor(
     readonly service: string,
     message: string,
-    readonly status?: number
+    readonly status?: number,
+    /**
+     * What the service itself said, when it bothered to say anything. Kept
+     * separate from `message` because it is upstream prose in whatever language
+     * and shape that service uses — fit for our logs, not for a rider's screen.
+     */
+    readonly detail?: string
   ) {
     super(message);
     this.name = 'UpstreamError';
+  }
+}
+
+/** Enough of an error body to identify the problem, never enough to fill a log. */
+const MAX_DETAIL_CHARS = 300;
+
+/**
+ * The failing response's own explanation. ORS in particular answers a failed
+ * round_trip with a bare 500 whose body carries the actual reason — without
+ * this, every such failure looks identical in the logs and the next one has to
+ * be diagnosed by guesswork all over again.
+ */
+async function errorDetail(response: Response): Promise<string | undefined> {
+  try {
+    const text = (await response.text()).trim();
+    if (!text) return undefined;
+
+    try {
+      const parsed = JSON.parse(text) as { error?: { message?: string; code?: number } | string };
+      const error = parsed.error;
+      if (typeof error === 'string') return error.slice(0, MAX_DETAIL_CHARS);
+      if (error?.message) {
+        const code = error.code === undefined ? '' : ` (kode ${error.code})`;
+        return `${error.message}${code}`.slice(0, MAX_DETAIL_CHARS);
+      }
+    } catch {
+      // Not JSON — the raw text is still better than nothing.
+    }
+
+    return text.slice(0, MAX_DETAIL_CHARS);
+  } catch {
+    return undefined;
   }
 }
 
@@ -70,7 +108,12 @@ export async function fetchJson<T>(
     });
 
     if (!response.ok) {
-      throw new UpstreamError(service, `${service} svarte ${response.status}`, response.status);
+      throw new UpstreamError(
+        service,
+        `${service} svarte ${response.status}`,
+        response.status,
+        await errorDetail(response)
+      );
     }
 
     return (await response.json()) as T;
