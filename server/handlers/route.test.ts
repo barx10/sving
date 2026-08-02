@@ -8,6 +8,7 @@ import {
   elevationStats,
   estimatedDurationMin,
   isRetryableRoundTripFailure,
+  paceAdjustment,
   pickBestRoute,
   pickCurviestFeature,
   pickSampleIndices,
@@ -135,31 +136,45 @@ describe('OpenRouteService profile', () => {
 });
 
 describe('estimated duration', () => {
-  it('slows a curvy route down from the car estimate', () => {
-    expect(estimatedDurationMin(60 * 60, 'curvy')).toBe(72);
+  it('slows a properly twisty road down from the car estimate', () => {
+    // 250°/km is what a fjord-valley road over a pass actually measures.
+    expect(estimatedDurationMin(60 * 60, 250)).toBe(72);
   });
 
-  it('leaves the fastest profile at the engine estimate', () => {
-    expect(estimatedDurationMin(60 * 60, 'fastest')).toBe(60);
+  it('leaves a straight road at the engine estimate', () => {
+    expect(estimatedDurationMin(60 * 60, 20)).toBe(60);
+  });
+
+  it('scales evenly in between rather than stepping', () => {
+    expect(paceAdjustment(150)).toBeCloseTo(1.1, 5);
+  });
+
+  it('does not run away on a road twistier than anything it was calibrated on', () => {
+    expect(paceAdjustment(2000)).toBe(paceAdjustment(250));
   });
 
   /**
-   * The ORS path used to return ORS's raw car estimate while the OSRM path
-   * applied the pace adjustment, so the same tour was reported twenty percent
-   * quicker on an instance that happened to have a routing key configured.
+   * Reported from a Rollag–Ringerike route: both styles returned the same road
+   * and the same 206 km, but the time jumped by exactly the old style-based
+   * factor of 1.2. The distance and the line on the map never moved, so the
+   * difference was the button, not the ride. A road takes as long as it takes.
    */
-  it('applies the same pace to an ORS route as to an OSRM one', () => {
+  it('derives the estimate from the road it describes, not from a preference', () => {
     const feature: OrsFeature = {
       geometry: { coordinates: twistyLine.map(([lat, lng]) => [lng, lat]) },
       properties: { summary: { distance: 42_000, duration: 60 * 60 } },
     };
 
-    const curvy = buildRouteResponseFromOrsFeature(feature, 'curvy');
-    const fastest = buildRouteResponseFromOrsFeature(feature, 'fastest');
+    // The builder no longer accepts a riding style at all, so the compiler
+    // enforces the half of this that used to need saying. What is left to
+    // check is that the number it does use is the road's own curvature —
+    // and that the ORS path applies it, which it once skipped entirely,
+    // reporting the same tour twenty percent quicker wherever a routing key
+    // happened to be configured.
+    const built = buildRouteResponseFromOrsFeature(feature);
 
-    expect(curvy.durationMin).toBe(estimatedDurationMin(60 * 60, 'curvy'));
-    expect(curvy.summary.durationMin).toBe(curvy.durationMin);
-    expect(fastest.durationMin).toBe(60);
+    expect(built.durationMin).toBe(estimatedDurationMin(60 * 60, built.summary.curvatureDegPerKm));
+    expect(built.summary.durationMin).toBe(built.durationMin);
   });
 });
 
