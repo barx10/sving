@@ -3,6 +3,7 @@ import type { Notice, RouteProfile, RouteSummary, Waypoint } from '../types';
 import { type PlaceResult, searchPlaces } from '../api';
 import { hasCoords } from '../utils/geo';
 import { formatDuration } from '../utils/format';
+import { GeolocationError, getRiderPosition } from '../utils/geolocation';
 import { curvatureRankingApplies } from '../utils/routeProfile';
 import {
   ArrowUpDown,
@@ -85,6 +86,7 @@ export const RouteEditor: React.FC<RouteEditorProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<PlaceResult[]>([]);
   const [isGeocoding, setIsGeocoding] = useState(false);
+  const [locatingIdx, setLocatingIdx] = useState<number | null>(null);
 
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchAbortRef = useRef<AbortController | null>(null);
@@ -182,24 +184,22 @@ export const RouteEditor: React.FC<RouteEditorProps> = ({
     setWaypoints(updated);
   };
 
-  const handleUseCurrentLocation = (index: number) => {
-    if (!navigator.geolocation) {
-      onNotify('error', 'Geolokasjon støttes ikke i denne nettleseren.');
-      return;
+  /**
+   * Finding a position can take both attempts and the best part of half a
+   * minute, so the button says so rather than looking dead.
+   */
+  const handleUseCurrentLocation = async (index: number) => {
+    setLocatingIdx(index);
+    try {
+      const coords = await getRiderPosition();
+      setWaypoints((prev) =>
+        prev.map((wp, i) => (i === index ? { ...wp, name: 'Min posisjon', ...coords } : wp))
+      );
+    } catch (err) {
+      onNotify('error', err instanceof GeolocationError ? err.message : 'Kunne ikke hente posisjonen din.');
+    } finally {
+      setLocatingIdx(null);
     }
-
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        setWaypoints((prev) =>
-          prev.map((wp, i) =>
-            i === index
-              ? { ...wp, name: 'Min posisjon', lat: position.coords.latitude, lng: position.coords.longitude }
-              : wp
-          )
-        );
-      },
-      (error) => onNotify('error', `Kunne ikke hente posisjon: ${error.message}`)
-    );
   };
 
   return (
@@ -374,10 +374,16 @@ export const RouteEditor: React.FC<RouteEditorProps> = ({
                     <button
                       type="button"
                       aria-label="Bruk min posisjon som startsted"
+                      title="Bruk min posisjon som startsted"
                       onClick={() => handleUseCurrentLocation(idx)}
-                      className="p-1.5 rounded-lg text-[#6B705C] hover:text-[#386641] hover:bg-[#E9EDC9] transition"
+                      disabled={locatingIdx !== null}
+                      className="p-1.5 rounded-lg text-[#6B705C] hover:text-[#386641] hover:bg-[#E9EDC9] transition disabled:opacity-60"
                     >
-                      <Navigation className="w-3.5 h-3.5" />
+                      {locatingIdx === idx ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin text-[#386641]" />
+                      ) : (
+                        <Navigation className="w-3.5 h-3.5" />
+                      )}
                     </button>
                   )}
 
