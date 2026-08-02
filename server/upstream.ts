@@ -13,7 +13,14 @@ export class UpstreamError extends Error {
      * separate from `message` because it is upstream prose in whatever language
      * and shape that service uses — fit for our logs, not for a rider's screen.
      */
-    readonly detail?: string
+    readonly detail?: string,
+    /**
+     * The service's own error code, kept as a value rather than left inside the
+     * prose. HTTP status alone is too coarse to act on: ORS answers both "my
+     * algorithm gave up, ask again" and "your coordinate is nowhere near a road"
+     * with a 404, and only one of those is worth retrying.
+     */
+    readonly code?: number | string
   ) {
     super(message);
     this.name = 'UpstreamError';
@@ -23,32 +30,44 @@ export class UpstreamError extends Error {
 /** Enough of an error body to identify the problem, never enough to fill a log. */
 const MAX_DETAIL_CHARS = 300;
 
+interface ErrorExplanation {
+  detail?: string;
+  code?: number | string;
+}
+
 /**
  * The failing response's own explanation. ORS in particular answers a failed
  * round_trip with a bare 500 whose body carries the actual reason — without
  * this, every such failure looks identical in the logs and the next one has to
  * be diagnosed by guesswork all over again.
  */
-async function errorDetail(response: Response): Promise<string | undefined> {
+async function errorExplanation(response: Response): Promise<ErrorExplanation> {
   try {
     const text = (await response.text()).trim();
-    if (!text) return undefined;
+    if (!text) return {};
 
     try {
-      const parsed = JSON.parse(text) as { error?: { message?: string; code?: number } | string };
+      const parsed = JSON.parse(text) as {
+        error?: { message?: string; code?: number | string } | string;
+      };
       const error = parsed.error;
-      if (typeof error === 'string') return error.slice(0, MAX_DETAIL_CHARS);
+
+      if (typeof error === 'string') return { detail: error.slice(0, MAX_DETAIL_CHARS) };
+
       if (error?.message) {
-        const code = error.code === undefined ? '' : ` (kode ${error.code})`;
-        return `${error.message}${code}`.slice(0, MAX_DETAIL_CHARS);
+        const suffix = error.code === undefined ? '' : ` (kode ${error.code})`;
+        return {
+          detail: `${error.message}${suffix}`.slice(0, MAX_DETAIL_CHARS),
+          code: error.code,
+        };
       }
     } catch {
       // Not JSON — the raw text is still better than nothing.
     }
 
-    return text.slice(0, MAX_DETAIL_CHARS);
+    return { detail: text.slice(0, MAX_DETAIL_CHARS) };
   } catch {
-    return undefined;
+    return {};
   }
 }
 
@@ -108,12 +127,8 @@ export async function fetchJson<T>(
     });
 
     if (!response.ok) {
-      throw new UpstreamError(
-        service,
-        `${service} svarte ${response.status}`,
-        response.status,
-        await errorDetail(response)
-      );
+      const { detail, code } = await errorExplanation(response);
+      throw new UpstreamError(service, `${service} svarte ${response.status}`, response.status, detail, code);
     }
 
     return (await response.json()) as T;

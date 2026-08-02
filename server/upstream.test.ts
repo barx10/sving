@@ -37,6 +37,27 @@ describe('fetchJson error reporting', () => {
     expect(err.detail).toBe('Unable to build a route (kode 2099)');
   });
 
+  /**
+   * The code has to survive as a value, not just as prose inside the detail:
+   * callers decide whether to retry on it, and parsing that back out of a
+   * human-readable string would be a needless trap.
+   */
+  it('carries the service error code as something callers can compare', async () => {
+    respondWith(
+      404,
+      JSON.stringify({ error: { code: 2010, message: 'Could not find routable point' } })
+    );
+
+    const err = await failing();
+    expect(err.code).toBe(2010);
+    expect(err.status).toBe(404);
+  });
+
+  it('leaves the code unset when the service does not give one', async () => {
+    respondWith(500, JSON.stringify({ error: { message: 'Something went wrong' } }));
+    expect((await failing()).code).toBeUndefined();
+  });
+
   it('handles a service that puts a plain string under error', async () => {
     respondWith(400, JSON.stringify({ error: 'Radius too large' }));
     expect((await failing()).detail).toBe('Radius too large');

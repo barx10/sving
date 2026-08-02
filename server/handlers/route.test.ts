@@ -263,6 +263,34 @@ describe('isRetryableRoundTripFailure', () => {
       )
     ).toBe(true);
   });
+
+  /**
+   * Observed in production: ORS reports "could not find routable point within a
+   * radius of 350.0 meters of specified coordinate" as code 2010 — over an HTTP
+   * 404, the same status as the transient blips above. No number of fresh seeds
+   * moves the rider closer to a road.
+   */
+  it('does not retry a coordinate that is nowhere near a road', () => {
+    expect(
+      isRetryableRoundTripFailure(
+        new UpstreamError(
+          'OpenRouteService',
+          'OpenRouteService svarte 404',
+          404,
+          'Could not find routable point within a radius of 350.0 meters (kode 2010)',
+          2010
+        )
+      )
+    ).toBe(false);
+  });
+
+  it('still retries a 404 that carries no such code', () => {
+    expect(
+      isRetryableRoundTripFailure(
+        new UpstreamError('OpenRouteService', 'OpenRouteService svarte 404', 404)
+      )
+    ).toBe(true);
+  });
 });
 
 describe('pickSampleIndices', () => {

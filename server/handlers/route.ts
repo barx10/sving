@@ -378,6 +378,18 @@ export async function handleNearbyRouteRequest(payload: unknown): Promise<ApiRes
     if (err instanceof UpstreamError) {
       console.warn(`[route] nearby loop: ${err.message}${err.detail ? ` — ORS: ${err.detail}` : ''}`);
 
+      // The rider's own position, nowhere near a road. Nothing upstream is
+      // wrong and nothing about the loop is the problem, so say what is.
+      if (err.code === ORS_NO_ROUTABLE_POINT) {
+        return {
+          status: 422,
+          body: {
+            error:
+              'Fant ingen kjørbar vei nær posisjonen din. Flytt startpunktet nærmere en vei — klikk i kartet der du vil starte — og prøv igjen.',
+          },
+        };
+      }
+
       // Every attempt exhausted, at four different lengths. Repeating the
       // upstream status back at the rider tells them nothing they can act on;
       // what they can act on is a different length or a different starting
@@ -408,6 +420,16 @@ export async function handleNearbyRouteRequest(payload: unknown): Promise<ApiRes
 const ROUND_TRIP_ATTEMPTS = 4;
 
 /**
+ * ORS answers "could not find a routable point within 350 metres of your
+ * coordinate" with code 2010 — and, confusingly, an HTTP 404, the same status
+ * as the transient blips below. No number of fresh seeds moves the rider closer
+ * to a road, so four attempts at this are four ways of saying the same thing
+ * slowly. We only learned to tell them apart once UpstreamError started
+ * carrying the service's own code.
+ */
+const ORS_NO_ROUTABLE_POINT = 2010;
+
+/**
  * ORS-side round_trip failures are a bare 500. Also seen twice in production:
  * a 404 for this exact same hardcoded URL, on requests otherwise identical to
  * ones that succeeded seconds apart — since the path never varies, that can
@@ -422,6 +444,7 @@ const ROUND_TRIP_ATTEMPTS = 4;
  */
 export function isRetryableRoundTripFailure(err: unknown): boolean {
   if (!(err instanceof UpstreamError)) return false;
+  if (err.code === ORS_NO_ROUTABLE_POINT) return false;
   return err.status === undefined || err.status === 500 || err.status === 404;
 }
 
