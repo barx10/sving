@@ -35,13 +35,17 @@ export const NearbyLoopModal: React.FC<NearbyLoopModalProps> = ({
     icon={<MapPin className="w-5 h-5" />}
   >
     {/*
-      "Radius" was the wrong word: the number is sent to the routing engine as
-      the length of the loop, so 40 km has always produced a ~40 km round trip
-      rather than one reaching 40 km out. The behaviour was right; the label
-      was not. (The wire field is still called radiusKm, for older clients.)
+      Neither "Radius" nor "Lengde" was honest. The number goes to the routing
+      engine as the loop's target length, but measured against production from
+      Oslo it overshoots by two to eight times and lands somewhere different on
+      every attempt: 20 km asked for came back as 33 km once and 157 km the
+      next. The engine documents the value as preferred rather than binding, and
+      it means it. So the control says what it is — a wish — and the dialog
+      shows the real distance below before the rider takes the route anywhere.
+      (The wire field is still radiusKm, for links and clients already out there.)
     */}
     <div className="space-y-2">
-      <span className="text-xs font-bold text-[#6B705C]">Lengde på turen</span>
+      <span className="text-xs font-bold text-[#6B705C]">Ønsket lengde</span>
       <div className="flex flex-wrap gap-2">
         {RADIUS_OPTIONS_KM.map((km) => (
           <button
@@ -59,6 +63,10 @@ export const NearbyLoopModal: React.FC<NearbyLoopModalProps> = ({
           </button>
         ))}
       </div>
+      <p className="text-[11px] text-[#6B705C] leading-relaxed">
+        Et ønske, ikke en bestilling: rundturgeneratoren bommer ofte kraftig og gir en ny tur hver
+        gang. Sjekk lengden du faktisk fikk før du legger i vei.
+      </p>
     </div>
 
     <button
@@ -87,6 +95,15 @@ export const NearbyLoopModal: React.FC<NearbyLoopModalProps> = ({
           <span className="text-[#6B705C]">~{Math.round(result.summary.durationMin / 60)} t</span>
           <span className="text-[#6B705C]">{result.summary.curvatureDegPerKm}° sving/km</span>
         </div>
+
+        {/* The overshoot is the norm, not the exception, so it is worth saying
+            out loud rather than leaving the rider to compare two numbers. */}
+        {result.summary.distanceKm > radiusKm * 1.4 && (
+          <p className="text-[11px] text-[#6B705C] leading-relaxed">
+            Det er {Math.round(result.summary.distanceKm / radiusKm)} ganger lengre enn du ba om.
+            Trykk «Prøv en annen rundtur» for et nytt forsøk, eller velg en kortere lengde.
+          </p>
+        )}
         <button
           type="button"
           onClick={onClose}
