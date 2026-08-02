@@ -28,6 +28,7 @@ import { pickWeatherFractions } from './utils/weatherCheckpoints';
 import { orderAlongRoute, sampleRouteForPois } from './utils/pois';
 import { decodeRouteFromHash, encodeRouteToHash } from './utils/routeLink';
 import { routeSignatureOf } from './utils/routeSignature';
+import { GeolocationError, getRiderPosition } from './utils/geolocation';
 import { Header } from './components/Header';
 import { RouteEditor } from './components/RouteEditor';
 import { MapView } from './components/MapView';
@@ -486,27 +487,21 @@ export default function App() {
     [userCoords]
   );
 
-  const handleSuggestNearby = useCallback(() => {
-    if (!navigator.geolocation) {
-      pushNotice('error', 'Geolokasjon støttes ikke i denne nettleseren.');
-      return;
-    }
-
+  const handleSuggestNearby = useCallback(async () => {
     setIsSuggestingLocation(true);
 
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        setUserCoords({ lat: position.coords.latitude, lng: position.coords.longitude });
-        setLoopResult(null);
-        setIsSuggestingLocation(false);
-        setIsLoopModalOpen(true);
-      },
-      (error) => {
-        setIsSuggestingLocation(false);
-        pushNotice('error', `Kunne ikke hente posisjon: ${error.message}. Tillat posisjon i nettleseren.`);
-      },
-      { enableHighAccuracy: true, timeout: 8000 }
-    );
+    try {
+      setUserCoords(await getRiderPosition());
+      setLoopResult(null);
+      setIsLoopModalOpen(true);
+    } catch (err) {
+      pushNotice(
+        'error',
+        err instanceof GeolocationError ? err.message : 'Kunne ikke hente posisjonen din.'
+      );
+    } finally {
+      setIsSuggestingLocation(false);
+    }
   }, [pushNotice]);
 
   const handleShowPresetsInstead = useCallback(() => {
