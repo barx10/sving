@@ -1,5 +1,7 @@
-import type { RouteProfile } from '../types';
-import { haversineDistance } from './geo';
+// Explicit .js, because the server imports this file too and Vercel runs the
+// api/ functions as real Node ESM, which will not resolve it without one.
+import type { RouteProfile } from '../types.js';
+import { haversineDistance } from './geo.js';
 
 /**
  * What a riding style actually decides, in one place both sides import.
