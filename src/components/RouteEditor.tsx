@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
-import type { Notice, RouteProfile, Waypoint } from '../types';
+import type { Notice, RouteProfile, RouteSummary, Waypoint } from '../types';
 import { type PlaceResult, searchPlaces } from '../api';
 import { hasCoords } from '../utils/geo';
+import { formatDuration } from '../utils/format';
 import { curvatureRankingApplies } from '../utils/routeProfile';
 import {
   ArrowUpDown,
@@ -11,6 +12,7 @@ import {
   Info,
   Loader2,
   MapPin,
+  MousePointerClick,
   Navigation,
   Plus,
   Repeat,
@@ -32,11 +34,15 @@ interface RouteEditorProps {
   setAvoidHighways: (avoid: boolean) => void;
   departureTime: string;
   setDepartureTime: (value: string) => void;
-  onCalculateRoute: () => void;
   onClearWaypoints: () => void;
   onMakeRoundTrip: () => void;
   onSuggestNearby: () => void;
   onNotify: (tone: Notice['tone'], message: string) => void;
+  /** Retries the automatic calculation after it failed. */
+  onRetryRoute: () => void;
+  /** The route currently on the map, if any. Drives the status line. */
+  summary?: RouteSummary | null;
+  routeError?: string | null;
   isSuggestingLocation?: boolean;
   isLoading: boolean;
 }
@@ -65,11 +71,13 @@ export const RouteEditor: React.FC<RouteEditorProps> = ({
   setAvoidHighways,
   departureTime,
   setDepartureTime,
-  onCalculateRoute,
   onClearWaypoints,
   onMakeRoundTrip,
   onSuggestNearby,
   onNotify,
+  onRetryRoute,
+  summary = null,
+  routeError = null,
   isSuggestingLocation = false,
   isLoading,
 }) => {
@@ -84,6 +92,10 @@ export const RouteEditor: React.FC<RouteEditorProps> = ({
   const placed = waypoints.filter(hasCoords);
   const placedCount = placed.length;
   const rankingApplies = curvatureRankingApplies(placed);
+
+  // Two points and no route yet means one is on its way: either in flight, or
+  // waiting out the short debounce that follows the last edit.
+  const isBusy = placedCount >= 2 && (isLoading || (!summary && !routeError));
 
   // Place search runs through our own server, which holds the identifying
   // User-Agent Nominatim asks for and caches repeat lookups.
@@ -441,24 +453,56 @@ export const RouteEditor: React.FC<RouteEditorProps> = ({
         </button>
       </div>
 
-      <button
-        type="button"
-        onClick={onCalculateRoute}
-        disabled={isLoading}
-        className="w-full mt-1 py-3 px-4 rounded-xl bg-[#386641] hover:bg-[#2D332A] text-white font-extrabold text-sm shadow-md transition flex items-center justify-center gap-2 disabled:opacity-50"
+      {/*
+        The route recalculates itself whenever the points or the preferences
+        change, so there is no button to press — this says where that stands.
+        The only thing worth a button is a failed attempt.
+      */}
+      <div
+        aria-live="polite"
+        className={`mt-1 rounded-xl border px-3.5 py-3 text-xs font-bold flex items-center gap-2 ${
+          routeError
+            ? 'bg-rose-50 border-rose-200 text-[#BC4749]'
+            : summary && !isBusy
+              ? 'bg-[#E9EDC9] border-[#CCD5AE] text-[#5C6B34]'
+              : 'bg-[#F9F9F7] border-[#E0E0D6] text-[#6B705C]'
+        }`}
       >
-        {isLoading ? (
+        {routeError ? (
           <>
-            <Loader2 className="w-4 h-4 animate-spin" />
+            <ShieldAlert className="w-4 h-4 shrink-0" />
+            <span className="flex-1 font-semibold leading-relaxed">{routeError}</span>
+            <button
+              type="button"
+              onClick={onRetryRoute}
+              className="shrink-0 px-2.5 py-1 rounded-lg bg-[#BC4749] text-white font-bold hover:bg-[#9B383A] transition"
+            >
+              Prøv igjen
+            </button>
+          </>
+        ) : isBusy ? (
+          <>
+            <Loader2 className="w-4 h-4 shrink-0 animate-spin text-[#386641]" />
             <span>Beregner rute...</span>
+          </>
+        ) : summary ? (
+          <>
+            <Flame className="w-4 h-4 shrink-0 text-[#386641]" />
+            <span>
+              Rute klar · {Math.round(summary.distanceKm)} km · {formatDuration(summary.durationMin)}
+            </span>
           </>
         ) : (
           <>
-            <Flame className="w-4 h-4" />
-            <span>Beregn rute</span>
+            <MousePointerClick className="w-4 h-4 shrink-0 text-[#386641]" />
+            <span className="font-semibold leading-relaxed">
+              {placedCount === 0
+                ? 'Klikk i kartet eller søk opp steder — ruta beregnes så snart to punkter er satt.'
+                : 'Sett ett punkt til, så beregnes ruta automatisk.'}
+            </span>
           </>
         )}
-      </button>
+      </div>
     </div>
   );
 };

@@ -12,10 +12,13 @@ framme ved hvert punkt, og ta ruten med videre som GPX eller lenke.
   rutemotorene bare tilbyr alternativer å rangere på en enkel A-til-B-rute under
   60 km i luftlinje. Utenfor det vinduet finnes det bare én rute, og «svingete» betyr
   da at motorvei unngås — planleggeren sier fra når det er tilfellet.
+- **Ruta beregnes selv** — så snart to punkter er satt, og på nytt hver gang du flytter
+  et punkt eller bytter preferanse. Ingen knapp å trykke på; planleggeren viser status
+  nederst, og tilbyr «Prøv igjen» hvis en beregning feiler.
 - **Vær ved ankomst** — henter varsel fra MET.no for det klokkeslettet du beregnes å være
-  framme ved hvert sjekkpunkt, ikke for da du trykket på knappen. Flagger kulde, nedbør
+  framme ved hvert sjekkpunkt, ikke for da du satte punktene. Flagger kulde, nedbør
   og vindkast.
-- **Langs ruta** — ett sammenleggbart panel under «Beregn rute» med fjelloverganger,
+- **Langs ruta** — ett sammenleggbart panel under ruteplanleggeren med fjelloverganger,
   bensinstasjoner og rasteplasser. Trykk på et sted for å se det i kartet.
   Fjellovergangene viser typisk sesong, tydelig merket som veiledende og med lenke
   til Statens vegvesen; bensin og rasteplasser hentes live fra OpenStreetMap i en
