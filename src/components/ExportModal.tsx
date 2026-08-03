@@ -14,6 +14,7 @@ interface ExportModalProps {
   route: RouteResult | null;
   profile: RouteProfile;
   avoidHighways: boolean;
+  avoidFerries: boolean;
   onSaveTour: (title: string, notes: string) => Promise<void>;
   onNotify: (tone: Notice['tone'], message: string) => void;
   /** Hands an imported file's points to the planner, which routes between them. */
@@ -49,6 +50,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   route,
   profile,
   avoidHighways,
+  avoidFerries,
   onSaveTour,
   onNotify,
   onImportRoute,

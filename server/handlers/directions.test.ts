@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   condense,
-  stepsFromOrs,
-  stepsFromOsrm,
+  ferryKm,
+  readOrsDirections,
+  readOsrmDirections,
   type OrsSegment,
   type OsrmLeg,
 } from './directions.js';
@@ -28,7 +29,7 @@ describe('stepsFromOrs', () => {
       },
     ];
 
-    expect(stepsFromOrs(segments, polyline).map((s) => s.instruction)).toEqual([
+    expect(readOrsDirections(segments, polyline, []).steps.map((s) => s.instruction)).toEqual([
       'Start',
       'Ta til høyre',
       'Skarp sving til venstre',
@@ -48,7 +49,7 @@ describe('stepsFromOrs', () => {
       },
     ];
 
-    expect(stepsFromOrs(segments, polyline).map((s) => s.distanceKm)).toEqual([0, 1.2, 9.2]);
+    expect(readOrsDirections(segments, polyline, []).steps.map((s) => s.distanceKm)).toEqual([0, 1.2, 9.2]);
   });
 
   it('places each cue where the manoeuvre is, so the map can follow later', () => {
@@ -56,7 +57,7 @@ describe('stepsFromOrs', () => {
       { steps: [{ type: 11, name: 'A', distance: 100, way_points: [0, 1] }] },
     ];
 
-    expect(stepsFromOrs(segments, polyline)[0]).toMatchObject({ lat: 62.5674, lng: 7.6869 });
+    expect(readOrsDirections(segments, polyline, []).steps[0]).toMatchObject({ lat: 62.5674, lng: 7.6869 });
   });
 
   it('survives an index that points past the end of the geometry', () => {
@@ -64,7 +65,7 @@ describe('stepsFromOrs', () => {
       { steps: [{ type: 1, name: 'A', distance: 100, way_points: [99] }] },
     ];
 
-    expect(() => stepsFromOrs(segments, polyline)).not.toThrow();
+    expect(() => readOrsDirections(segments, polyline, []).steps).not.toThrow();
   });
 
   it('drops an unnamed road rather than printing an empty line', () => {
@@ -72,11 +73,11 @@ describe('stepsFromOrs', () => {
       { steps: [{ type: 1, name: '  ', distance: 100, way_points: [0] }] },
     ];
 
-    expect(stepsFromOrs(segments, polyline)[0].roadName).toBeNull();
+    expect(readOrsDirections(segments, polyline, []).steps[0].roadName).toBeNull();
   });
 
   it('returns nothing at all when the engine sent no instructions', () => {
-    expect(stepsFromOrs([], polyline)).toEqual([]);
+    expect(readOrsDirections([], polyline, []).steps).toEqual([]);
   });
 });
 
@@ -98,7 +99,7 @@ describe('stepsFromOsrm', () => {
       },
     ];
 
-    expect(stepsFromOsrm(legs).map((s) => s.instruction)).toEqual([
+    expect(readOsrmDirections(legs).steps.map((s) => s.instruction)).toEqual([
       'Start',
       'Skarp sving til høyre',
       'Ta påkjøringsrampen',
@@ -111,7 +112,7 @@ describe('stepsFromOsrm', () => {
       { steps: [{ distance: 10, name: 'A', maneuver: { type: 'depart', location: [7.6869, 62.5674] } }] },
     ];
 
-    expect(stepsFromOsrm(legs)[0]).toMatchObject({ lat: 62.5674, lng: 7.6869 });
+    expect(readOsrmDirections(legs).steps[0]).toMatchObject({ lat: 62.5674, lng: 7.6869 });
   });
 
   it('falls back to carrying straight on for a manoeuvre it does not know', () => {
@@ -119,18 +120,24 @@ describe('stepsFromOsrm', () => {
       { steps: [{ distance: 10, name: 'A', maneuver: { type: 'notification' } }] },
     ];
 
-    expect(stepsFromOsrm(legs)[0].instruction).toBe('Fortsett rett fram');
+    expect(readOsrmDirections(legs).steps[0].instruction).toBe('Fortsett rett fram');
   });
 
   it('copes with a leg carrying no steps', () => {
-    expect(stepsFromOsrm([{}])).toEqual([]);
+    expect(readOsrmDirections([{}]).steps).toEqual([]);
   });
 });
 
-const step = (instruction: string, roadName: string | null, distanceKm = 0): RouteStep => ({
+const step = (
+  instruction: string,
+  roadName: string | null,
+  distanceKm = 0,
+  isFerry = false
+): RouteStep => ({
   distanceKm,
   instruction,
   roadName,
+  isFerry,
   lat: 62,
   lng: 7,
 });
@@ -186,5 +193,88 @@ describe('condense', () => {
     ];
 
     expect(condense(many).length).toBeLessThanOrEqual(250);
+  });
+});
+
+/**
+ * Ferries decide two things a rider cannot plan without: what to catch, and how
+ * long the trip honestly takes. The engines answer with very different
+ * confidence, and the difference between "none" and "cannot tell" matters more
+ * than either on a Vestlandet route.
+ */
+describe('ferries', () => {
+  const ferryLegs: OsrmLeg[] = [
+    {
+      steps: [
+        { distance: 8000, duration: 600, name: 'Fv64', mode: 'driving', maneuver: { type: 'depart' } },
+        {
+          distance: 3200,
+          duration: 900,
+          name: 'Sølsnes - Åfarnes',
+          mode: 'ferry',
+          maneuver: { type: 'continue' },
+        },
+        { distance: 5000, duration: 400, name: 'Fv64', mode: 'driving', maneuver: { type: 'arrive' } },
+      ],
+    },
+  ];
+
+  it('reads a crossing off OSRM, which marks the travel mode outright', () => {
+    const { ferries, ferrySeconds, ferryStatus } = readOsrmDirections(ferryLegs);
+
+    expect(ferryStatus).toBe('known');
+    expect(ferrySeconds).toBe(900);
+    expect(ferries).toEqual([{ name: 'Sølsnes - Åfarnes', distanceKm: 8, crossingMin: 15 }]);
+  });
+
+  it('says "ta ferga" rather than describing the corner onto the quay', () => {
+    expect(readOsrmDirections(ferryLegs).steps[1]).toMatchObject({
+      instruction: 'Ta ferga',
+      isFerry: true,
+    });
+  });
+
+  it('reads a crossing off ORS when the waytype annotation resolves it', () => {
+    const segments: OrsSegment[] = [
+      { steps: [
+        { type: 11, name: 'Fv64', distance: 8000, duration: 600, way_points: [0, 1] },
+        { type: 6, name: 'Sølsnes - Åfarnes', distance: 3200, duration: 900, way_points: [1, 2] },
+      ] },
+    ];
+
+    const { ferries, ferryStatus } = readOrsDirections(segments, polyline, [[1, 2, 9]]);
+    expect(ferryStatus).toBe('known');
+    expect(ferries[0]).toMatchObject({ name: 'Sølsnes - Åfarnes', crossingMin: 15 });
+  });
+
+  /**
+   * ORS has a long-standing bug where ferry sections come back as waytype 0
+   * rather than 9, and the annotation has to be asked for at all. An empty list
+   * from an engine that was never going to tell us is not "no ferries".
+   */
+  it('reports not knowing, rather than reporting none', () => {
+    const segments: OrsSegment[] = [
+      { steps: [{ type: 11, name: 'Fv64', distance: 8000, way_points: [0, 1] }] },
+    ];
+
+    expect(readOrsDirections(segments, polyline, undefined).ferryStatus).toBe('unknown');
+    expect(readOrsDirections(segments, polyline, []).ferryStatus).toBe('known');
+  });
+
+  it('keeps every crossing on the cue sheet, however long the route', () => {
+    const many = [
+      step('Start', 'A'),
+      ...Array.from({ length: 400 }, (_, i) => step('Fortsett rett fram', 'A', i)),
+      step('Ta ferga', 'Sølsnes - Åfarnes', 401, true),
+      ...Array.from({ length: 400 }, (_, i) => step('Ta til høyre', `Veg ${i}`, 402 + i)),
+      step('Framme', null, 900),
+    ];
+
+    expect(condense(many).some((s) => s.isFerry)).toBe(true);
+  });
+
+  it('counts ferry kilometres for the routes that try to avoid them', () => {
+    expect(ferryKm(ferryLegs)).toBeCloseTo(3.2, 5);
+    expect(ferryKm([{ steps: [{ distance: 1000, mode: 'driving' }] }])).toBe(0);
   });
 });

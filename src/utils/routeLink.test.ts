@@ -64,14 +64,15 @@ describe('route links', () => {
       { id: 'b', name: '', lat: 0, lng: 0 },
     ];
     expect(encodeRouteToHash(empty, 'curvy', true)).toBe('');
-    expect(buildShareUrl(empty, 'curvy', true, 'https://sving.no/')).toBe('');
+    expect(buildShareUrl(empty, 'curvy', true, false, 'https://sving.no/')).toBe('');
   });
 
   it('replaces any existing hash rather than appending to it', () => {
-    const url = buildShareUrl(waypoints, 'curvy', true, 'https://sving.no/?a=1#tur=old');
+    const url = buildShareUrl(waypoints, 'curvy', true, false, 'https://sving.no/?a=1#tur=old');
     expect(url.startsWith('https://sving.no/?a=1#tur=')).toBe(true);
     expect(url.match(/#/g)).toHaveLength(1);
   });
+
 
   it('returns null for malformed links instead of throwing', () => {
     expect(decodeRouteFromHash('')).toBeNull();
@@ -93,5 +94,19 @@ describe('route links', () => {
     const payload = { v: 1, p: 'rocket', a: 1, w: [[62.5, 7.6, 'a'], [62, 7, 'b']] };
     const encoded = Buffer.from(JSON.stringify(payload)).toString('base64url');
     expect(decodeRouteFromHash(`#tur=${encoded}`)!.profile).toBe('curvy');
+  });
+
+  /**
+   * Links are sent in group chats and cannot be revoked or migrated, so a link
+   * made before the ferry switch existed has to keep working exactly as it did.
+   */
+  it('reads a link written before ferries were a choice', () => {
+    const older = encodeRouteToHash(waypoints, 'curvy', true);
+    expect(decodeRouteFromHash(older)?.avoidFerries).toBe(false);
+  });
+
+  it('carries the ferry choice both ways', () => {
+    const hash = encodeRouteToHash(waypoints, 'curvy', true, true);
+    expect(decodeRouteFromHash(hash)?.avoidFerries).toBe(true);
   });
 });

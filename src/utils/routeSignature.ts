@@ -11,7 +11,8 @@ import { hasCoords } from './geo';
 export function routeSignatureOf(
   waypoints: Waypoint[],
   profile: RouteProfile,
-  avoidHighways: boolean
+  avoidHighways: boolean,
+  avoidFerries = false
 ): string {
   return [
     waypoints
@@ -22,5 +23,6 @@ export function routeSignatureOf(
       .join(';'),
     profile,
     avoidHighways ? 'noHighway' : 'highway',
+    avoidFerries ? 'noFerry' : 'ferry',
   ].join('|');
 }

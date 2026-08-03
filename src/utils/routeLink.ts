@@ -17,6 +17,12 @@ interface EncodedRoute {
   v: number;
   p: RouteProfile;
   a: 0 | 1;
+  /**
+   * Ferries avoided. Added after the schema shipped, so it is optional and
+   * absent means no — links sent before this existed keep working untouched,
+   * which is the whole point of a link nobody can revoke.
+   */
+  f?: 0 | 1;
   /** [lat, lng, name] per waypoint. */
   w: [number, number, string][];
 }
@@ -25,6 +31,7 @@ export interface SharedRoute {
   waypoints: Waypoint[];
   profile: RouteProfile;
   avoidHighways: boolean;
+  avoidFerries: boolean;
 }
 
 const round = (n: number): number => Number(n.toFixed(COORD_PRECISION));
@@ -63,7 +70,8 @@ function fromBase64Url(input: string): string {
 export function encodeRouteToHash(
   waypoints: Waypoint[],
   profile: RouteProfile,
-  avoidHighways: boolean
+  avoidHighways: boolean,
+  avoidFerries = false
 ): string {
   const placed = waypoints.filter(hasCoords);
   if (placed.length < 2) return '';
@@ -72,6 +80,7 @@ export function encodeRouteToHash(
     v: SCHEMA_VERSION,
     p: profile,
     a: avoidHighways ? 1 : 0,
+    ...(avoidFerries ? { f: 1 as const } : {}),
     w: placed.map((wp) => [round(wp.lat), round(wp.lng), wp.name ?? '']),
   };
 
@@ -83,9 +92,10 @@ export function buildShareUrl(
   waypoints: Waypoint[],
   profile: RouteProfile,
   avoidHighways: boolean,
+  avoidFerries = false,
   baseUrl?: string
 ): string {
-  const hash = encodeRouteToHash(waypoints, profile, avoidHighways);
+  const hash = encodeRouteToHash(waypoints, profile, avoidHighways, avoidFerries);
   if (!hash) return '';
 
   const base = baseUrl ?? (typeof window !== 'undefined' ? window.location.href : '');
@@ -127,6 +137,7 @@ export function decodeRouteFromHash(hash: string): SharedRoute | null {
       // Links shared before the riding styles merged carry 'scenic'.
       profile: normalizeProfile(parsed.p),
       avoidHighways: parsed.a !== 0,
+      avoidFerries: parsed.f === 1,
     };
   } catch {
     return null;

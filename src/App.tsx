@@ -78,6 +78,9 @@ export default function App() {
   const [waypoints, setWaypoints] = useState<Waypoint[]>(emptyWaypoints);
   const [profile, setProfile] = useState<RouteProfile>('curvy');
   const [avoidHighways, setAvoidHighways] = useState(true);
+  // Off by default: on Vestlandet, avoiding every ferry can add hours or make a
+  // route impossible. It is a choice a rider makes, never one made for them.
+  const [avoidFerries, setAvoidFerries] = useState(false);
   const [departureTime, setDepartureTime] = useState(() => toDateTimeLocal(nextWholeHour()));
 
   const [route, setRoute] = useState<RouteResult | null>(null);
@@ -252,6 +255,7 @@ export default function App() {
       currentWaypoints: Waypoint[],
       currentProfile: RouteProfile,
       currentAvoidHighways: boolean,
+      currentAvoidFerries: boolean,
       currentDeparture: string
     ) => {
       const placed = currentWaypoints.filter(hasCoords);
@@ -261,12 +265,23 @@ export default function App() {
       const controller = new AbortController();
       routeRequestRef.current = controller;
 
-      routedSignatureRef.current = routeSignatureOf(placed, currentProfile, currentAvoidHighways);
+      routedSignatureRef.current = routeSignatureOf(
+        placed,
+        currentProfile,
+        currentAvoidHighways,
+        currentAvoidFerries
+      );
       setIsLoadingRoute(true);
       setRouteError(null);
 
       try {
-        const result = await fetchRoute(placed, currentProfile, currentAvoidHighways, controller.signal);
+        const result = await fetchRoute(
+          placed,
+          currentProfile,
+          currentAvoidHighways,
+          currentAvoidFerries,
+          controller.signal
+        );
         if (controller.signal.aborted) return;
 
         setRoute(result);
@@ -274,7 +289,12 @@ export default function App() {
         setNotices((prev) => prev.filter((n) => n.tone !== 'error'));
 
         // Keep the address bar in sync so the rider can just copy the URL.
-        const hash = encodeRouteToHash(placed, currentProfile, currentAvoidHighways);
+        const hash = encodeRouteToHash(
+          placed,
+          currentProfile,
+          currentAvoidHighways,
+          currentAvoidFerries
+        );
         if (hash) window.history.replaceState(null, '', hash);
 
         const departure = new Date(currentDeparture);
@@ -301,18 +321,25 @@ export default function App() {
    * left for the rider to press.
    */
   const placedWaypoints = useMemo(() => waypoints.filter(hasCoords), [waypoints]);
-  const routeSignature = routeSignatureOf(placedWaypoints, profile, avoidHighways);
+  const routeSignature = routeSignatureOf(placedWaypoints, profile, avoidHighways, avoidFerries);
 
   useEffect(() => {
     if (placedWaypoints.length < 2) return;
     if (routedSignatureRef.current === routeSignature) return;
 
     const timer = setTimeout(
-      () => void calculateRoute(placedWaypoints, profile, avoidHighways, departureTimeRef.current),
+      () =>
+        void calculateRoute(
+          placedWaypoints,
+          profile,
+          avoidHighways,
+          avoidFerries,
+          departureTimeRef.current
+        ),
       AUTO_ROUTE_DEBOUNCE_MS
     );
     return () => clearTimeout(timer);
-  }, [routeSignature, placedWaypoints, profile, avoidHighways, calculateRoute]);
+  }, [routeSignature, placedWaypoints, profile, avoidHighways, avoidFerries, calculateRoute]);
 
   /** Dropping below two points leaves nothing to draw — clear rather than lie. */
   useEffect(() => {
@@ -331,8 +358,8 @@ export default function App() {
   /** After a failed attempt the signature is unchanged, so retrying needs a nudge. */
   const handleRetryRoute = useCallback(() => {
     routedSignatureRef.current = null;
-    void calculateRoute(placedWaypoints, profile, avoidHighways, departureTime);
-  }, [placedWaypoints, profile, avoidHighways, departureTime, calculateRoute]);
+    void calculateRoute(placedWaypoints, profile, avoidHighways, avoidFerries, departureTime);
+  }, [placedWaypoints, profile, avoidHighways, avoidFerries, departureTime, calculateRoute]);
 
   /* ---------------------------------------------------------------- */
   /* Startup: shared link + mountain pass status                       */
@@ -351,6 +378,7 @@ export default function App() {
     setWaypoints(shared.waypoints);
     setProfile(shared.profile);
     setAvoidHighways(shared.avoidHighways);
+    setAvoidFerries(shared.avoidFerries);
     pushNotice('info', 'Delt rute lastet inn.');
   }, [pushNotice]);
 
@@ -541,12 +569,12 @@ export default function App() {
       // The loop came from its own endpoint, so tell the auto-routing effect the
       // two points are already handled — otherwise it would replace the round
       // trip with an empty A-to-A route between start and finish.
-      routedSignatureRef.current = routeSignatureOf(loopWaypoints, 'curvy', true);
+      routedSignatureRef.current = routeSignatureOf(loopWaypoints, 'curvy', true, avoidFerries);
       setWaypoints(loopWaypoints);
       setRouteError(null);
       setNotices((prev) => prev.filter((n) => n.tone !== 'error'));
 
-      const hash = encodeRouteToHash(loopWaypoints, 'curvy', true);
+      const hash = encodeRouteToHash(loopWaypoints, 'curvy', true, avoidFerries);
       if (hash) window.history.replaceState(null, '', hash);
 
       const departure = new Date(departureTime);
@@ -557,7 +585,7 @@ export default function App() {
     } finally {
       setIsGeneratingLoop(false);
     }
-  }, [userCoords, loopRadiusKm, departureTime, loadWeather, resetPois, pushNotice]);
+  }, [userCoords, loopRadiusKm, departureTime, avoidFerries, loadWeather, resetPois, pushNotice]);
 
   const handleSaveTour = useCallback(
     async (title: string, notes: string) => {
@@ -730,6 +758,8 @@ export default function App() {
               setProfile={handleSetProfile}
               avoidHighways={avoidHighways}
               setAvoidHighways={setAvoidHighways}
+              avoidFerries={avoidFerries}
+              setAvoidFerries={setAvoidFerries}
               departureTime={departureTime}
               setDepartureTime={handleDepartureChange}
               onClearWaypoints={handleClearWaypoints}
@@ -779,7 +809,12 @@ export default function App() {
               hasRoute={polyline.length > 0}
             />
 
-            <DirectionsPanel steps={route?.steps ?? []} hasRoute={polyline.length > 1} />
+            <DirectionsPanel
+              steps={route?.steps ?? []}
+              ferries={route?.ferries ?? []}
+              ferryStatus={route?.ferryStatus ?? 'unknown'}
+              hasRoute={polyline.length > 1}
+            />
 
             <Suspense
               fallback={
@@ -815,6 +850,7 @@ export default function App() {
         route={route}
         profile={profile}
         avoidHighways={avoidHighways}
+        avoidFerries={avoidFerries}
         onSaveTour={handleSaveTour}
         onNotify={pushNotice}
         onImportRoute={handleImportRoute}
