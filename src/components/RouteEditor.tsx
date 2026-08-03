@@ -8,6 +8,7 @@ import { curvatureRankingApplies } from '../utils/routeProfile';
 import {
   ArrowUpDown,
   Clock,
+  Ship,
   Compass,
   Flame,
   Info,
@@ -23,7 +24,8 @@ import {
   Zap,
 } from 'lucide-react';
 
-const MAX_WAYPOINTS = 8;
+/** Shared with the GPX import, which thins a file down to what fits here. */
+export const MAX_WAYPOINTS = 8;
 const SEARCH_DEBOUNCE_MS = 350;
 
 interface RouteEditorProps {
@@ -33,6 +35,8 @@ interface RouteEditorProps {
   setProfile: (p: RouteProfile) => void;
   avoidHighways: boolean;
   setAvoidHighways: (avoid: boolean) => void;
+  avoidFerries: boolean;
+  setAvoidFerries: (avoid: boolean) => void;
   departureTime: string;
   setDepartureTime: (value: string) => void;
   onClearWaypoints: () => void;
@@ -63,6 +67,40 @@ const PROFILES: { id: RouteProfile; label: string; hint: string; icon: React.Rea
   },
 ];
 
+const Switch: React.FC<{
+  icon: React.ReactNode;
+  label: string;
+  hint?: string;
+  checked: boolean;
+  onChange: (next: boolean) => void;
+}> = ({ icon, label, hint, checked, onChange }) => (
+  <div className="mt-2.5 p-2.5 rounded-xl bg-[#F9F9F7] border border-[#E0E0D6]">
+    <div className="flex items-center justify-between gap-2">
+      <span className="flex items-center gap-2">
+        {icon}
+        <span className="text-xs font-bold">{label}</span>
+      </span>
+      <button
+        type="button"
+        onClick={() => onChange(!checked)}
+        role="switch"
+        aria-checked={checked}
+        aria-label={label}
+        className={`shrink-0 relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+          checked ? 'bg-[#386641]' : 'bg-[#E0E0D6]'
+        }`}
+      >
+        <span
+          className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow-sm transition-transform ${
+            checked ? 'translate-x-6' : 'translate-x-1'
+          }`}
+        />
+      </button>
+    </div>
+    {hint && <p className="mt-1.5 text-[11px] text-[#6B705C] leading-relaxed">{hint}</p>}
+  </div>
+);
+
 export const RouteEditor: React.FC<RouteEditorProps> = ({
   waypoints,
   setWaypoints,
@@ -70,6 +108,8 @@ export const RouteEditor: React.FC<RouteEditorProps> = ({
   setProfile,
   avoidHighways,
   setAvoidHighways,
+  avoidFerries,
+  setAvoidFerries,
   departureTime,
   setDepartureTime,
   onClearWaypoints,
@@ -276,28 +316,22 @@ export const RouteEditor: React.FC<RouteEditorProps> = ({
           </p>
         )}
 
-        <div className="mt-2.5 flex items-center justify-between p-2.5 rounded-xl bg-[#F9F9F7] border border-[#E0E0D6]">
-          <span className="flex items-center gap-2">
-            <ShieldAlert className="w-4 h-4 text-[#386641]" />
-            <span className="text-xs font-bold">Unngå motorvei (E-veier)</span>
-          </span>
-          <button
-            type="button"
-            onClick={() => setAvoidHighways(!avoidHighways)}
-            role="switch"
-            aria-checked={avoidHighways}
-            aria-label="Unngå motorvei"
-            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-              avoidHighways ? 'bg-[#386641]' : 'bg-[#E0E0D6]'
-            }`}
-          >
-            <span
-              className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow-sm transition-transform ${
-                avoidHighways ? 'translate-x-6' : 'translate-x-1'
-              }`}
-            />
-          </button>
-        </div>
+        <Switch
+          icon={<ShieldAlert className="w-4 h-4 text-[#386641]" />}
+          label="Unngå motorvei (E-veier)"
+          checked={avoidHighways}
+          onChange={setAvoidHighways}
+        />
+
+        {/* Ferries are not a detour on Vestlandet, they are the road — so this
+            stays off unless the rider says otherwise, and says what it costs. */}
+        <Switch
+          icon={<Ship className="w-4 h-4 text-[#386641]" />}
+          label="Unngå ferger"
+          hint="Ferger koster tid og penger, men uten dem blir mange ruter mye lengre — eller umulige."
+          checked={avoidFerries}
+          onChange={setAvoidFerries}
+        />
       </div>
 
       {/* Departure time drives the forecast at each checkpoint */}

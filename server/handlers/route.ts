@@ -7,7 +7,17 @@ import {
   haversineDistance,
   isValidCoord,
 } from '../../src/utils/geo.js';
-import type { RouteProfile } from '../../src/types.js';
+import type { FerryCrossing, RouteProfile, RouteStep } from '../../src/types.js';
+import {
+  condense,
+  ferryKm,
+  readOrsDirections,
+  readOsrmDirections,
+  type FerryStatus,
+  type OrsSegment,
+  type OrsWaytypeValues,
+  type OsrmLeg,
+} from './directions.js';
 import { curvatureRankingApplies, normalizeProfile } from '../../src/utils/routeProfile.js';
 import { badRequest, type ApiResult } from './apiResult.js';
 
@@ -56,8 +66,15 @@ export function paceAdjustment(curvatureDegPerKm: number): number {
  * ORS's raw car estimate, so the same tour was reported twenty percent quicker
  * on an instance that had a routing key than on one that fell back to OSRM.
  */
-export function estimatedDurationMin(rawSeconds: number, curvatureDegPerKm: number): number {
-  return Math.round((rawSeconds / 60) * paceAdjustment(curvatureDegPerKm));
+export function estimatedDurationMin(
+  rawSeconds: number,
+  curvatureDegPerKm: number,
+  ferrySeconds = 0
+): number {
+  // A crossing takes as long as the boat takes. Applying the riding-pace
+  // adjustment to it would claim a twisty road slows the ferry down too.
+  const riding = Math.max(0, rawSeconds - ferrySeconds);
+  return Math.round((riding / 60) * paceAdjustment(curvatureDegPerKm) + ferrySeconds / 60);
 }
 
 export interface ElevationPoint {
@@ -72,6 +89,9 @@ interface RouteResponse {
   distanceKm: number;
   durationMin: number;
   elevationPoints: ElevationPoint[];
+  steps: RouteStep[];
+  ferries: FerryCrossing[];
+  ferryStatus: FerryStatus;
   summary: {
     distanceKm: number;
     durationMin: number;
@@ -93,13 +113,19 @@ interface RouteRequestBody {
   coordinates?: [number, number][];
   profile?: RouteProfile;
   avoidHighways?: boolean;
+  avoidFerries?: boolean;
 }
 
 const round1 = (value: number): number => Math.round(value * 10) / 10;
 
 /** Calculates a route from an untrusted request payload. Host-neutral. */
 export async function handleRouteRequest(payload: unknown): Promise<ApiResult> {
-  const { coordinates, profile = 'curvy', avoidHighways = true } = (payload ?? {}) as RouteRequestBody;
+  const {
+    coordinates,
+    profile = 'curvy',
+    avoidHighways = true,
+    avoidFerries = false,
+  } = (payload ?? {}) as RouteRequestBody;
 
   if (!Array.isArray(coordinates) || coordinates.length < 2) {
     return badRequest('Minst to koordinater (start og slutt) er påkrevd.');
@@ -122,11 +148,17 @@ export async function handleRouteRequest(payload: unknown): Promise<ApiResult> {
     coordinates.map(([lng, lat]) => [round5(lng), round5(lat)]),
     resolvedProfile,
     avoidHighways,
+    avoidFerries,
   ]);
 
   try {
     const result = await routeCache.wrap(cacheKey, () =>
-      calculateRoute(coordinates, resolvedProfile, Boolean(avoidHighways))
+      calculateRoute(
+        coordinates,
+        resolvedProfile,
+        Boolean(avoidHighways),
+        Boolean(avoidFerries)
+      )
     );
     return { status: 200, body: result };
   } catch (err) {
@@ -144,16 +176,17 @@ const round5 = (value: number): number => Number(value.toFixed(5));
 async function calculateRoute(
   coordinates: [number, number][],
   profile: RouteProfile,
-  avoidHighways: boolean
+  avoidHighways: boolean,
+  avoidFerries: boolean
 ): Promise<RouteResponse> {
   if (OPENROUTESERVICE_API_KEY) {
     try {
-      return await routeViaOpenRouteService(coordinates, profile, avoidHighways);
+      return await routeViaOpenRouteService(coordinates, profile, avoidHighways, avoidFerries);
     } catch (err) {
       console.warn('[route] OpenRouteService failed, falling back to OSRM:', err);
     }
   }
-  return routeViaOsrm(coordinates, profile, avoidHighways);
+  return routeViaOsrm(coordinates, profile, avoidHighways, avoidFerries);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -162,7 +195,13 @@ async function calculateRoute(
 
 export interface OrsFeature {
   geometry: { coordinates: number[][] };
-  properties: { summary: { distance: number; duration: number } };
+  properties: {
+    summary: { distance: number; duration: number };
+    /** Present only when the request asked for instructions. */
+    segments?: OrsSegment[];
+    /** Present only when the request asked for the waytype extra. */
+    extras?: { waytype?: { values?: OrsWaytypeValues } };
+  };
 }
 
 interface OrsResponse {
@@ -217,7 +256,8 @@ export function wantsOrsAlternatives(
 async function routeViaOpenRouteService(
   coordinates: [number, number][],
   profile: RouteProfile,
-  avoidHighways: boolean
+  avoidHighways: boolean,
+  avoidFerries: boolean
 ): Promise<RouteResponse> {
   // OpenRouteService has no motorcycle profile. Its full set is driving-car,
   // driving-hgv, four cycling profiles, two foot profiles and wheelchair — see
@@ -228,13 +268,20 @@ async function routeViaOpenRouteService(
   const body: Record<string, unknown> = {
     coordinates,
     elevation: true,
-    instructions: false,
+    // The cue sheet is built from these. ORS can translate its own prose, but
+    // not into Norwegian, so we ask for the structured steps and write the
+    // wording ourselves — see handlers/directions.ts.
+    instructions: true,
+    // Where the ferries are. ORS has a long-standing bug where crossings come
+    // back as waytype 0 rather than 9 — readOrsDirections reports that as
+    // "unknown" rather than letting it pass for "no ferries".
+    extra_info: ['waytype'],
     preference: profile === 'fastest' ? 'fastest' : 'recommended',
   };
 
-  if (avoidHighways || profile !== 'fastest') {
-    body.options = { avoid_features: ['highways', 'tollways'] };
-  }
+  const avoided = avoidHighways || profile !== 'fastest' ? ['highways', 'tollways'] : [];
+  if (avoidFerries) avoided.push('ferries');
+  if (avoided.length > 0) body.options = { avoid_features: avoided };
 
   if (wantsOrsAlternatives(coordinates, profile)) {
     body.alternative_routes = { target_count: 3, share_factor: 0.6, weight_factor: 1.6 };
@@ -296,13 +343,21 @@ export function buildRouteResponseFromOrsFeature(feature: OrsFeature): RouteResp
   const { summary } = feature.properties;
   const distanceKm = round1(summary.distance / 1000);
   const curvature = Math.round(curvatureDegPerKm(polyline));
-  const durationMin = estimatedDurationMin(summary.duration, curvature);
+  const directions = readOrsDirections(
+    feature.properties.segments ?? [],
+    polyline,
+    feature.properties.extras?.waytype?.values
+  );
+  const durationMin = estimatedDurationMin(summary.duration, curvature, directions.ferrySeconds);
 
   return {
     polyline,
     distanceKm,
     durationMin,
     elevationPoints,
+    steps: condense(directions.steps),
+    ferries: directions.ferries,
+    ferryStatus: directions.ferryStatus,
     summary: {
       distanceKm,
       durationMin,
@@ -469,7 +524,10 @@ async function routeViaOrsRoundTrip(
     const body = {
       coordinates: [[lng, lat]],
       elevation: true,
-      instructions: false,
+      // A generated loop is the one route where the rider knows none of the
+      // roads in advance, so the cue sheet matters more here, not less.
+      instructions: true,
+      extra_info: ['waytype'],
       options: {
         avoid_features: ['highways', 'tollways'],
         round_trip: {
@@ -534,7 +592,7 @@ export interface OsrmRoute {
   distance: number;
   duration: number;
   geometry: { coordinates: [number, number][] };
-  legs?: { steps?: { name?: string; distance: number }[] }[];
+  legs?: OsrmLeg[];
 }
 
 interface OsrmResponse {
@@ -544,7 +602,8 @@ interface OsrmResponse {
 async function routeViaOsrm(
   coordinates: [number, number][],
   profile: RouteProfile,
-  avoidHighways: boolean
+  avoidHighways: boolean,
+  avoidFerries: boolean
 ): Promise<RouteResponse> {
   const coordsParam = coordinates.map((c) => `${c[0]},${c[1]}`).join(';');
   const url =
@@ -557,7 +616,7 @@ async function routeViaOsrm(
     throw new UpstreamError('OSRM', 'Fant ingen rute mellom de valgte punktene');
   }
 
-  const chosen = pickBestRoute(data.routes, profile, avoidHighways);
+  const chosen = pickBestRoute(data.routes, profile, avoidHighways, avoidFerries);
   const polyline: [number, number][] = chosen.geometry.coordinates.map((c) => [c[1], c[0]]);
   const distances = cumulativeDistancesKm(polyline);
 
@@ -575,13 +634,17 @@ async function routeViaOsrm(
 
   const distanceKm = round1(chosen.distance / 1000);
   const curvature = Math.round(curvatureDegPerKm(polyline));
-  const durationMin = estimatedDurationMin(chosen.duration, curvature);
+  const directions = readOsrmDirections(chosen.legs ?? []);
+  const durationMin = estimatedDurationMin(chosen.duration, curvature, directions.ferrySeconds);
 
   return {
     polyline,
     distanceKm,
     durationMin,
     elevationPoints,
+    steps: condense(directions.steps),
+    ferries: directions.ferries,
+    ferryStatus: directions.ferryStatus,
     summary: {
       distanceKm,
       durationMin,
@@ -606,16 +669,31 @@ export function scoreRoute(
   line: [number, number][],
   highwayFraction: number,
   profile: RouteProfile,
-  avoidHighways: boolean
+  avoidHighways: boolean,
+  ferryFraction = 0
 ): number {
   const highwayWeight = avoidHighways ? 200 : 60;
   const curvatureWeight = profile === 'fastest' ? 0 : 1;
-  return curvatureWeight * curvatureDegPerKm(line) - highwayWeight * highwayFraction;
+
+  // OSRM has no avoid parameter, so avoiding a ferry means preferring the
+  // alternative that uses less of one. Weighted above motorways: a rider who
+  // has said no to ferries has said so about a timetable and a fare, not a
+  // preference for scenery. Only ever applied when they asked.
+  return (
+    curvatureWeight * curvatureDegPerKm(line) -
+    highwayWeight * highwayFraction -
+    400 * ferryFraction
+  );
 }
 
 /** Picks the best of OSRM's alternative routes for the requested riding style. */
-export function pickBestRoute(routes: OsrmRoute[], profile: RouteProfile, avoidHighways: boolean): OsrmRoute {
-  if (profile === 'fastest' && !avoidHighways) return routes[0];
+export function pickBestRoute(
+  routes: OsrmRoute[],
+  profile: RouteProfile,
+  avoidHighways: boolean,
+  avoidFerries = false
+): OsrmRoute {
+  if (profile === 'fastest' && !avoidHighways && !avoidFerries) return routes[0];
   if (routes.length === 1) return routes[0];
 
   let best = routes[0];
@@ -625,8 +703,10 @@ export function pickBestRoute(routes: OsrmRoute[], profile: RouteProfile, avoidH
     const line: [number, number][] = candidate.geometry.coordinates.map((c) => [c[1], c[0]]);
     const totalKm = candidate.distance / 1000;
     const highwayFraction = totalKm > 0 ? estimateHighwayKm(candidate) / totalKm : 0;
+    const ferryFraction =
+      avoidFerries && totalKm > 0 ? ferryKm(candidate.legs ?? []) / totalKm : 0;
 
-    const score = scoreRoute(line, highwayFraction, profile, avoidHighways);
+    const score = scoreRoute(line, highwayFraction, profile, avoidHighways, ferryFraction);
     if (score > bestScore) {
       bestScore = score;
       best = candidate;

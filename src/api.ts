@@ -43,6 +43,7 @@ export function fetchRoute(
   waypoints: Waypoint[],
   profile: RouteProfile,
   avoidHighways: boolean,
+  avoidFerries: boolean,
   signal?: AbortSignal
 ): Promise<RouteResult> {
   const coordinates = waypoints.filter(hasCoords).map((wp) => [wp.lng, wp.lat]);
@@ -50,7 +51,7 @@ export function fetchRoute(
   return requestJson<RouteResult>('/api/route', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ coordinates, profile, avoidHighways }),
+    body: JSON.stringify({ coordinates, profile, avoidHighways, avoidFerries }),
     signal,
   });
 }

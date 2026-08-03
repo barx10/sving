@@ -355,3 +355,47 @@ describe('elevationStats', () => {
     });
   });
 });
+
+/**
+ * Reported against the app's own comment that the estimate "excludes ferry
+ * waits": the sailing time was there all along inside the engine's duration,
+ * and the riding-pace adjustment was being applied to it — claiming a twisty
+ * road slows the boat down too.
+ */
+describe('estimated duration with a ferry aboard', () => {
+  it('leaves the crossing at the time the boat takes', () => {
+    // One hour total, fifteen minutes of it afloat, on a properly twisty road.
+    const withFerry = estimatedDurationMin(60 * 60, 250, 15 * 60);
+    const withoutFerry = estimatedDurationMin(60 * 60, 250);
+
+    expect(withFerry).toBe(Math.round(45 * 1.2 + 15));
+    expect(withFerry).toBeLessThan(withoutFerry);
+  });
+
+  it('behaves exactly as before on a route with no ferry', () => {
+    expect(estimatedDurationMin(60 * 60, 250, 0)).toBe(estimatedDurationMin(60 * 60, 250));
+  });
+
+  it('never goes negative if an engine reports more ferry than route', () => {
+    expect(estimatedDurationMin(600, 250, 9999)).toBeGreaterThanOrEqual(0);
+  });
+});
+
+describe('avoiding ferries on the OSRM path', () => {
+  it('prefers the alternative that uses less ferry when asked', () => {
+    const viaFerry = candidate(twistyLine, 100);
+    viaFerry.legs = [{ steps: [{ distance: 40_000, mode: 'ferry' }] }];
+    const overLand = candidate(twistyLine, 100);
+    overLand.legs = [{ steps: [{ distance: 0, mode: 'driving' }] }];
+
+    expect(pickBestRoute([viaFerry, overLand], 'curvy', true, true)).toBe(overLand);
+  });
+
+  it('leaves the choice alone when the rider has not asked', () => {
+    const viaFerry = candidate(twistyLine, 100);
+    viaFerry.legs = [{ steps: [{ distance: 40_000, mode: 'ferry' }] }];
+    const overLand = candidate(straightLine, 260);
+
+    expect(pickBestRoute([viaFerry, overLand], 'curvy', true, false)).toBe(viaFerry);
+  });
+});
