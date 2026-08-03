@@ -1,10 +1,11 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import type { Notice, RouteProfile, RouteResult, Waypoint } from '../types';
 import { buildAppleMapsUrl, buildGoogleMapsUrl, downloadGpxFile } from '../utils/exportUtils';
 import { buildShareUrl } from '../utils/routeLink';
 import { hasCoords } from '../utils/geo';
 import { Modal } from './Modal';
-import { BookmarkPlus, Check, CheckCircle2, Copy, Download, ExternalLink, Share2 } from 'lucide-react';
+import { GpxImportError, parseGpx, type ImportedRoute } from '../utils/gpxImport';
+import { BookmarkPlus, Check, CheckCircle2, Copy, Download, ExternalLink, Share2, Upload } from 'lucide-react';
 
 interface ExportModalProps {
   isOpen: boolean;
@@ -15,6 +16,10 @@ interface ExportModalProps {
   avoidHighways: boolean;
   onSaveTour: (title: string, notes: string) => Promise<void>;
   onNotify: (tone: Notice['tone'], message: string) => void;
+  /** Hands an imported file's points to the planner, which routes between them. */
+  onImportRoute: (imported: ImportedRoute) => void;
+  /** How many points the planner can hold, so thinning happens before it sees them. */
+  maxWaypoints: number;
 }
 
 const ExportRow: React.FC<{
@@ -46,11 +51,35 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   avoidHighways,
   onSaveTour,
   onNotify,
+  onImportRoute,
+  maxWaypoints,
 }) => {
   const [tourTitle, setTourTitle] = useState('');
   const [notes, setNotes] = useState('');
   const [copiedShareLink, setCopiedShareLink] = useState(false);
   const [savedSuccess, setSavedSuccess] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  /**
+   * Reads the file here rather than on the server: a GPX is the rider's own
+   * track, and this app has no business seeing it. Nothing leaves the browser.
+   */
+  const handleImportFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    // Clearing it now means picking the same file twice in a row still fires.
+    event.target.value = '';
+    if (!file) return;
+
+    try {
+      onImportRoute(parseGpx(await file.text(), maxWaypoints));
+      onClose();
+    } catch (err) {
+      onNotify(
+        'error',
+        err instanceof GpxImportError ? err.message : 'Kunne ikke lese GPX-fila.'
+      );
+    }
+  };
 
   const placed = waypoints.filter(hasCoords);
 
@@ -107,8 +136,8 @@ export const ExportModal: React.FC<ExportModalProps> = ({
     <Modal
       isOpen={isOpen}
       onClose={onClose}
-      title="Eksport og deling"
-      subtitle="Ta ruten med til GPS, mobil eller kompisen"
+      title="Del, eksporter og hent inn"
+      subtitle="Ta ruten med til GPS, mobil eller kompisen — eller hent inn en GPX"
       icon={<Download className="w-5 h-5" />}
     >
       <div className="space-y-1.5">
@@ -194,6 +223,29 @@ export const ExportModal: React.FC<ExportModalProps> = ({
               <ExternalLink className="w-3.5 h-3.5" />
             </a>
           }
+        />
+        <ExportRow
+          badge={<Upload className="w-5 h-5" />}
+          title="Hent inn GPX-fil"
+          description="Åpne en tur fra en kompis eller et forum, med vær og bensin langs den"
+          action={
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#F9F9F7] hover:bg-[#E9EDC9] text-xs font-bold border border-[#E0E0D6] transition"
+            >
+              <Upload className="w-3.5 h-3.5 text-[#386641]" />
+              <span>Velg fil</span>
+            </button>
+          }
+        />
+
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".gpx,application/gpx+xml,application/xml,text/xml"
+          onChange={handleImportFile}
+          className="hidden"
         />
       </div>
 

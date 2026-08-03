@@ -23,7 +23,8 @@ import {
   Zap,
 } from 'lucide-react';
 
-const MAX_WAYPOINTS = 8;
+/** Shared with the GPX import, which thins a file down to what fits here. */
+export const MAX_WAYPOINTS = 8;
 const SEARCH_DEBOUNCE_MS = 350;
 
 interface RouteEditorProps {

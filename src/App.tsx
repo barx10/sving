@@ -29,8 +29,9 @@ import { orderAlongRoute, sampleRouteForPois } from './utils/pois';
 import { decodeRouteFromHash, encodeRouteToHash } from './utils/routeLink';
 import { routeSignatureOf } from './utils/routeSignature';
 import { GeolocationError, getRiderPosition } from './utils/geolocation';
+import type { ImportedRoute } from './utils/gpxImport';
 import { Header } from './components/Header';
-import { RouteEditor } from './components/RouteEditor';
+import { MAX_WAYPOINTS, RouteEditor } from './components/RouteEditor';
 import { MapView } from './components/MapView';
 import { WeatherWidget } from './components/WeatherWidget';
 import { RoutePanel, type PoiStatus, type RouteLayer } from './components/RoutePanel';
@@ -590,6 +591,44 @@ export default function App() {
     []
   );
 
+  /**
+   * Points from a GPX file become ordinary waypoints, and the auto-routing
+   * effect takes it from there. What the rider is told depends on what the file
+   * held: a planned route comes back as itself, while a recorded track is a
+   * line of thousands of points that has to be rebuilt through a handful of
+   * them — and a rebuilt route can follow a different road than the one ridden.
+   */
+  const handleImportRoute = useCallback(
+    (imported: ImportedRoute) => {
+      const stamp = Date.now();
+      setWaypoints(
+        imported.points.map((point, index) => ({
+          id: `gpx_${index}_${stamp}`,
+          name: point.name || `Importert punkt ${index + 1}`,
+          lat: point.lat,
+          lng: point.lng,
+        }))
+      );
+
+      const thinned = imported.originalCount > imported.points.length;
+
+      if (imported.source === 'track') {
+        pushNotice(
+          'info',
+          `Sporet hadde ${imported.originalCount} punkter. Ruta er bygget på nytt gjennom ${imported.points.length} av dem, og kan følge en annen vei enn originalen.`
+        );
+      } else if (thinned) {
+        pushNotice(
+          'info',
+          `Fila hadde ${imported.originalCount} punkter — de ${imported.points.length} som får plass er beholdt.`
+        );
+      } else {
+        pushNotice('info', `Hentet inn ${imported.points.length} rutepunkter fra GPX-fila.`);
+      }
+    },
+    [pushNotice]
+  );
+
   const handleDeleteTour = useCallback(async (id: string) => {
     await db.tours.delete(id);
   }, []);
@@ -677,7 +716,6 @@ export default function App() {
         onOpenSavedTours={() => setIsSavedOpen(true)}
         onOpenExport={() => setIsExportOpen(true)}
         savedToursCount={savedTours.length}
-        hasRoute={polyline.length > 0}
       />
 
       <main className="flex-1 max-w-7xl w-full mx-auto p-3 sm:p-5 space-y-4">
@@ -779,6 +817,8 @@ export default function App() {
         avoidHighways={avoidHighways}
         onSaveTour={handleSaveTour}
         onNotify={pushNotice}
+        onImportRoute={handleImportRoute}
+        maxWaypoints={MAX_WAYPOINTS}
       />
 
       <SavedToursDrawer

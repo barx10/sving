@@ -6,7 +6,6 @@ interface HeaderProps {
   onOpenSavedTours: () => void;
   onOpenExport: () => void;
   savedToursCount: number;
-  hasRoute: boolean;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -14,7 +13,6 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenSavedTours,
   onOpenExport,
   savedToursCount,
-  hasRoute,
 }) => {
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
   const [isOffline, setIsOffline] = useState(!navigator.onLine);
@@ -100,17 +98,17 @@ export const Header: React.FC<HeaderProps> = ({
             )}
           </button>
 
-          {/* Export / Share Modal */}
-          {hasRoute && (
-            <button
-              id="btn-export-route"
-              onClick={onOpenExport}
-              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#A7C957] hover:bg-[#b8d865] text-[#2D332A] text-xs sm:text-sm font-black shadow-md transition"
-            >
-              <Share2 className="w-4 h-4" />
-              <span>Eksport / GPX</span>
-            </button>
-          )}
+          {/* Routes go both ways through here, so unlike the export it used to
+              be, this stays reachable before there is a route to export — the
+              import behind it is exactly what an empty planner needs. */}
+          <button
+            id="btn-export-route"
+            onClick={onOpenExport}
+            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#A7C957] hover:bg-[#b8d865] text-[#2D332A] text-xs sm:text-sm font-black shadow-md transition"
+          >
+            <Share2 className="w-4 h-4" />
+            <span>GPX og deling</span>
+          </button>
 
           {/* Install PWA Prompt */}
           {deferredPrompt && (
