@@ -212,8 +212,10 @@ interface OrsResponse {
  * Applies the same curvature ranking to ORS alternatives that we use for OSRM's.
  *
  * ORS has no motorcycle profile and no curvature weighting of its own, so
- * without this the ORS path would return whatever a car would drive. Motorways
- * are already excluded upstream via avoid_features, so curvature alone decides.
+ * without this the ORS path would return whatever a car would drive. Motorway
+ * mileage is not scored here because ORS gives no per-step road names to
+ * measure it with — when the rider asks to avoid them, avoid_features keeps
+ * them out of the candidates in the first place.
  */
 export function pickCurviestFeature(
   features: OrsFeature[],
@@ -236,6 +238,25 @@ export function pickCurviestFeature(
   }
 
   return best;
+}
+
+/**
+ * What the engine is told to keep off, from what the rider actually asked for.
+ *
+ * This used to read `avoidHighways || profile !== 'fastest'`, which meant that
+ * picking "Svingete veier" avoided motorways whatever the switch said. The
+ * switch was therefore inert in the one style most riders use: flipping it
+ * returned a byte-identical route, and it looked broken because it was.
+ *
+ * Picking a curvy style still turns the switch on — visibly, in the planner,
+ * where the rider can turn it back off. What it no longer does is quietly
+ * override it.
+ */
+export function avoidedFeatures(avoidHighways: boolean, avoidFerries: boolean): string[] {
+  const avoided: string[] = [];
+  if (avoidHighways) avoided.push('highways', 'tollways');
+  if (avoidFerries) avoided.push('ferries');
+  return avoided;
 }
 
 /**
@@ -279,8 +300,7 @@ async function routeViaOpenRouteService(
     preference: profile === 'fastest' ? 'fastest' : 'recommended',
   };
 
-  const avoided = avoidHighways || profile !== 'fastest' ? ['highways', 'tollways'] : [];
-  if (avoidFerries) avoided.push('ferries');
+  const avoided = avoidedFeatures(avoidHighways, avoidFerries);
   if (avoided.length > 0) body.options = { avoid_features: avoided };
 
   if (wantsOrsAlternatives(coordinates, profile)) {
