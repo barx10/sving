@@ -34,6 +34,7 @@ import { RouteEditor } from './components/RouteEditor';
 import { MapView } from './components/MapView';
 import { WeatherWidget } from './components/WeatherWidget';
 import { RoutePanel, type PoiStatus, type RouteLayer } from './components/RoutePanel';
+import { DirectionsPanel } from './components/DirectionsPanel';
 import { ExportModal } from './components/ExportModal';
 import { SavedToursDrawer } from './components/SavedToursDrawer';
 import { PresetRoutesModal } from './components/PresetRoutesModal';
@@ -739,6 +740,8 @@ export default function App() {
               isLoading={isLoadingWeather}
               hasRoute={polyline.length > 0}
             />
+
+            <DirectionsPanel steps={route?.steps ?? []} hasRoute={polyline.length > 1} />
 
             <Suspense
               fallback={

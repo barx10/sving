@@ -7,7 +7,8 @@ import {
   haversineDistance,
   isValidCoord,
 } from '../../src/utils/geo.js';
-import type { RouteProfile } from '../../src/types.js';
+import type { RouteProfile, RouteStep } from '../../src/types.js';
+import { condense, stepsFromOrs, stepsFromOsrm, type OrsSegment, type OsrmLeg } from './directions.js';
 import { curvatureRankingApplies, normalizeProfile } from '../../src/utils/routeProfile.js';
 import { badRequest, type ApiResult } from './apiResult.js';
 
@@ -72,6 +73,7 @@ interface RouteResponse {
   distanceKm: number;
   durationMin: number;
   elevationPoints: ElevationPoint[];
+  steps: RouteStep[];
   summary: {
     distanceKm: number;
     durationMin: number;
@@ -162,7 +164,11 @@ async function calculateRoute(
 
 export interface OrsFeature {
   geometry: { coordinates: number[][] };
-  properties: { summary: { distance: number; duration: number } };
+  properties: {
+    summary: { distance: number; duration: number };
+    /** Present only when the request asked for instructions. */
+    segments?: OrsSegment[];
+  };
 }
 
 interface OrsResponse {
@@ -228,7 +234,10 @@ async function routeViaOpenRouteService(
   const body: Record<string, unknown> = {
     coordinates,
     elevation: true,
-    instructions: false,
+    // The cue sheet is built from these. ORS can translate its own prose, but
+    // not into Norwegian, so we ask for the structured steps and write the
+    // wording ourselves — see handlers/directions.ts.
+    instructions: true,
     preference: profile === 'fastest' ? 'fastest' : 'recommended',
   };
 
@@ -297,12 +306,14 @@ export function buildRouteResponseFromOrsFeature(feature: OrsFeature): RouteResp
   const distanceKm = round1(summary.distance / 1000);
   const curvature = Math.round(curvatureDegPerKm(polyline));
   const durationMin = estimatedDurationMin(summary.duration, curvature);
+  const steps = condense(stepsFromOrs(feature.properties.segments ?? [], polyline));
 
   return {
     polyline,
     distanceKm,
     durationMin,
     elevationPoints,
+    steps,
     summary: {
       distanceKm,
       durationMin,
@@ -469,7 +480,9 @@ async function routeViaOrsRoundTrip(
     const body = {
       coordinates: [[lng, lat]],
       elevation: true,
-      instructions: false,
+      // A generated loop is the one route where the rider knows none of the
+      // roads in advance, so the cue sheet matters more here, not less.
+      instructions: true,
       options: {
         avoid_features: ['highways', 'tollways'],
         round_trip: {
@@ -534,7 +547,7 @@ export interface OsrmRoute {
   distance: number;
   duration: number;
   geometry: { coordinates: [number, number][] };
-  legs?: { steps?: { name?: string; distance: number }[] }[];
+  legs?: OsrmLeg[];
 }
 
 interface OsrmResponse {
@@ -576,12 +589,14 @@ async function routeViaOsrm(
   const distanceKm = round1(chosen.distance / 1000);
   const curvature = Math.round(curvatureDegPerKm(polyline));
   const durationMin = estimatedDurationMin(chosen.duration, curvature);
+  const steps = condense(stepsFromOsrm(chosen.legs ?? []));
 
   return {
     polyline,
     distanceKm,
     durationMin,
     elevationPoints,
+    steps,
     summary: {
       distanceKm,
       durationMin,

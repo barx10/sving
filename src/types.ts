@@ -31,6 +31,18 @@ export interface ElevationPoint {
   lng: number;
 }
 
+/** One line on the cue sheet: how far in, what to do, and which road it puts you on. */
+export interface RouteStep {
+  /** Distance from the start of the route to this manoeuvre. */
+  distanceKm: number;
+  /** Norwegian, written by us — neither engine speaks it. */
+  instruction: string;
+  /** Null where OSM leaves the road unnamed, which is common on Norwegian side roads. */
+  roadName: string | null;
+  lat: number;
+  lng: number;
+}
+
 export interface RouteSources {
   routing: string;
   elevation: string | null;
@@ -41,6 +53,8 @@ export interface RouteResult {
   distanceKm: number;
   durationMin: number;
   elevationPoints: ElevationPoint[];
+  /** Empty when the engine gave no usable instructions — never a fabricated cue. */
+  steps: RouteStep[];
   summary: RouteSummary;
   sources: RouteSources;
   notes: string[];
