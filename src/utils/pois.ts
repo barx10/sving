@@ -11,11 +11,33 @@ import { cumulativeDistancesKm, haversineDistance } from './geo';
  * are interpolated, not skipped.
  */
 
-/** Roughly how far apart the sampled points sit along the route. */
-export const SAMPLE_SPACING_KM = 5;
+/**
+ * Roughly how far apart the sampled points sit along the route.
+ *
+ * Overpass charges for every point in an `around` list, and the corridor search
+ * was running right at the edge of its own 25-second budget: a 124 km route
+ * sampled 26 points and took 19.4 seconds on overpass-api.de, so any load at
+ * all tipped it into a 504 and the rider got "Fant ikke bensinstasjoner".
+ *
+ * Measured on that same route, against the same instance:
+ *
+ *   26 points  19.4 s  94 finds
+ *   14 points  10.6 s  91 finds
+ *    8 points   7.9 s  64 finds
+ *
+ * Ten kilometres is where that curve turns: a little over half the cost for all
+ * but a handful of the results. Going coarser starts dropping real stations,
+ * because Overpass follows the straight chord between samples and a chord that
+ * long leaves the road on anything twisty.
+ */
+export const SAMPLE_SPACING_KM = 10;
 
-/** Hard cap, matching what the server accepts. Long routes sample coarser. */
-export const MAX_SAMPLE_POINTS = 80;
+/**
+ * Hard cap, well under what the server accepts. A long route samples coarser
+ * rather than sending a query that times out and returns nothing at all — a
+ * rough answer about fuel beats an error message about it.
+ */
+export const MAX_SAMPLE_POINTS = 30;
 
 /**
  * Samples the route at a fixed spacing, always keeping the first and last

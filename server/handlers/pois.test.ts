@@ -211,7 +211,14 @@ describe('handlePoisRequest across Overpass instances', () => {
 
   const urlsAsked = () => fetchJson.mock.calls.map((call) => String(call[1]).split('?')[0]);
 
-  it('asks the next instance when the first one is under load', async () => {
+  /**
+   * Measured against overpass-api.de with the identical corridor query, three
+   * times in a row: 200 in 10.1 s, then 504 after 9.2 s, then 200 in 17.8 s. A
+   * 504 that arrives well inside the instance's own 25-second budget is load
+   * shedding, not a verdict on the query — so the primary is asked again before
+   * we go looking elsewhere.
+   */
+  it('asks the same instance again when it sheds load', async () => {
     const { UpstreamError } = await import('../upstream.js');
     fetchJson
       .mockRejectedValueOnce(new UpstreamError('Overpass', 'Overpass svarte 504', 504))
@@ -231,10 +238,24 @@ describe('handlePoisRequest across Overpass instances', () => {
 
     const asked = urlsAsked();
     expect(asked).toHaveLength(2);
+    expect(asked[0]).toBe(asked[1]);
+  });
+
+  it('moves on to a mirror once the primary has had its two goes', async () => {
+    const { UpstreamError } = await import('../upstream.js');
+    fetchJson
+      .mockRejectedValueOnce(new UpstreamError('Overpass', 'Overpass svarte 504', 504))
+      .mockRejectedValueOnce(new UpstreamError('Overpass', 'Overpass svarte 504', 504))
+      .mockResolvedValueOnce({ elements: [] });
+
+    expect((await handlePoisRequest({ points: [[64.15, 9.15], [64.25, 9.25]] })).status).toBe(200);
+
+    const asked = urlsAsked();
+    expect(asked).toHaveLength(3);
     expect(new Set(asked).size).toBe(2);
   });
 
-  it('asks the next instance when the first one has no slot left for us', async () => {
+  it('asks again when the first attempt has no slot left for us', async () => {
     const { UpstreamError } = await import('../upstream.js');
     fetchJson
       .mockRejectedValueOnce(new UpstreamError('Overpass', 'Overpass svarte 429', 429))
@@ -245,7 +266,7 @@ describe('handlePoisRequest across Overpass instances', () => {
   });
 
   /** A rejected query is rejected everywhere; shopping it around is just load. */
-  it('does not shop a bad query around the mirrors', async () => {
+  it('does not shop a bad query around, however many attempts are left', async () => {
     const { UpstreamError } = await import('../upstream.js');
     fetchJson.mockRejectedValue(new UpstreamError('Overpass', 'Overpass svarte 400', 400));
 

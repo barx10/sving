@@ -174,21 +174,52 @@ function dedupe(pois: PointOfInterest[]): PointOfInterest[] {
 
 /**
  * Long enough to outlast the [timeout:25] Overpass gives itself — cutting a
- * query short abandons work the instance is still paying to run — and short
- * enough that two attempts plus overhead fit inside the function's own budget.
- * An instance that has not answered by now has stopped working on it.
+ * query short abandons work the instance is still paying to run.
  */
-const ATTEMPT_TIMEOUT_MS = 28_000;
+const ATTEMPT_TIMEOUT_MS = 25_000;
+
+/** All attempts together, comfortably inside the function's own budget. */
+const TOTAL_BUDGET_MS = 45_000;
+
+/** Below this there is no point starting another attempt. */
+const MIN_ATTEMPT_MS = 8_000;
+
+/**
+ * Who to ask, in order.
+ *
+ * The primary gets two goes before we go elsewhere. Measured against
+ * overpass-api.de with the identical corridor query, three times in a row: 200
+ * in 10.1 s, then 504 after 9.2 s, then 200 in 17.8 s. A 504 that arrives well
+ * inside the instance's own 25-second budget is it shedding load, not passing
+ * judgement on the query — and asking again is what actually fixes it.
+ *
+ * The mirrors get a turn after that, though none measured well: kumi.systems
+ * and private.coffee both timed out at 45 and 59 seconds on the same query.
+ * They stay in the list because a Norwegian rider's request runs from a Vercel
+ * region, not from here, and an instance that is slow from one place is not
+ * necessarily slow from another. What did not make the list is overpass.osm.ch,
+ * which answered the same query in one second with zero results: it carries
+ * only Swiss data, so it would have reported an empty road as confidently as a
+ * real answer.
+ */
+function attemptOrder(instances: string[]): string[] {
+  return [instances[0], ...instances];
+}
 
 async function lookup(points: [number, number][]): Promise<PointOfInterest[]> {
   const query = encodeURIComponent(buildQuery(points));
+  const attempts = attemptOrder(OVERPASS_URLS);
+  const deadline = Date.now() + TOTAL_BUDGET_MS;
   let lastError: unknown;
 
-  for (const [index, instance] of OVERPASS_URLS.entries()) {
+  for (const [index, instance] of attempts.entries()) {
+    const remaining = deadline - Date.now();
+    if (index > 0 && remaining < MIN_ATTEMPT_MS) break;
+
     try {
       const data = await throttleFor(instance)(() =>
         fetchJson<OverpassResponse>('Overpass', `${instance}?data=${query}`, {
-          timeoutMs: ATTEMPT_TIMEOUT_MS,
+          timeoutMs: Math.min(ATTEMPT_TIMEOUT_MS, Math.max(remaining, MIN_ATTEMPT_MS)),
         })
       );
 
@@ -198,12 +229,10 @@ async function lookup(points: [number, number][]): Promise<PointOfInterest[]> {
       );
     } catch (err) {
       lastError = err;
-
-      const isLast = index === OVERPASS_URLS.length - 1;
-      if (isLast || !worthAnotherInstance(err)) throw err;
+      if (!worthAnotherInstance(err)) throw err;
 
       console.warn(
-        `[pois] ${err instanceof Error ? err.message : err} — prøver neste Overpass-instans`
+        `[pois] ${err instanceof Error ? err.message : err} — forsøk ${index + 1} av ${attempts.length}`
       );
     }
   }
