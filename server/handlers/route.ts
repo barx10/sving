@@ -19,6 +19,7 @@ import {
   type OsrmLeg,
 } from './directions.js';
 import { curvatureRankingApplies, normalizeProfile } from '../../src/utils/routeProfile.js';
+import { legPairs, shouldRoutePerLeg, stitchLegs, type RouteLeg } from './legs.js';
 import { badRequest, type ApiResult } from './apiResult.js';
 
 /** Roads do not change hour to hour; identical requests can share a result. */
@@ -173,19 +174,87 @@ export async function handleRouteRequest(payload: unknown): Promise<ApiResult> {
 
 const round5 = (value: number): number => Number(value.toFixed(5));
 
+/**
+ * One cached leg per pair of points, so dragging a single waypoint re-asks for
+ * the two legs that touch it rather than the whole route. Keyed the same way as
+ * the route cache, which is what keeps the extra requests from becoming a
+ * burden on the public engines this app is a guest of.
+ */
+const legCache = new TtlCache<RouteLeg>(60 * 60 * 1000, 400);
+
+const legCacheKey = (
+  pair: [number, number][],
+  engine: string,
+  profile: RouteProfile,
+  avoidHighways: boolean,
+  avoidFerries: boolean
+): string =>
+  JSON.stringify([
+    engine,
+    pair.map(([lng, lat]) => [round5(lng), round5(lat)]),
+    profile,
+    avoidHighways,
+    avoidFerries,
+  ]);
+
+/**
+ * Routes each leg on its own, so every leg gets alternatives to rank.
+ *
+ * The legs go out together rather than one after another: a rider waiting on a
+ * four-stop route should not wait four times over. It is a handful of requests
+ * at once, well inside what either engine asks of a caller, and the leg cache
+ * means an edit usually sends far fewer.
+ */
+async function routePerLeg(
+  coordinates: [number, number][],
+  profile: RouteProfile,
+  avoidHighways: boolean,
+  avoidFerries: boolean
+): Promise<RouteLeg> {
+  const legs = await Promise.all(
+    legPairs(coordinates).map((pair) =>
+      legCache.wrap(legCacheKey(pair, 'ors', profile, avoidHighways, avoidFerries), () =>
+        orsLeg(pair, profile, avoidHighways, avoidFerries)
+      )
+    )
+  );
+
+  return stitchLegs(legs);
+}
+
 async function calculateRoute(
   coordinates: [number, number][],
   profile: RouteProfile,
   avoidHighways: boolean,
   avoidFerries: boolean
 ): Promise<RouteResponse> {
+  // Only on the ORS path. Measured against the public OSRM server, a plain
+  // two-point request in this terrain comes back with exactly one route
+  // whether we ask for alternatives=true, 3 or 5 — there is nothing to rank at
+  // any leg length, so splitting there would spend a request per leg to buy
+  // the same road. ORS computes alternatives on request, and that is the
+  // engine this app routes through when it has a key.
+  const perLeg =
+    Boolean(OPENROUTESERVICE_API_KEY) &&
+    shouldRoutePerLeg(coordinates, profile, avoidHighways, avoidFerries);
+
   if (OPENROUTESERVICE_API_KEY) {
     try {
+      if (perLeg) {
+        const leg = await routePerLeg(coordinates, profile, avoidHighways, avoidFerries);
+        return responseFromLeg(
+          leg,
+          'OpenRouteService',
+          leg.elevations ? 'OpenRouteService (SRTM)' : null
+        );
+      }
       return await routeViaOpenRouteService(coordinates, profile, avoidHighways, avoidFerries);
     } catch (err) {
+      // A leg that will not route is not a reason to hand back nothing.
       console.warn('[route] OpenRouteService failed, falling back to OSRM:', err);
     }
   }
+
   return routeViaOsrm(coordinates, profile, avoidHighways, avoidFerries);
 }
 
@@ -274,12 +343,12 @@ export function wantsOrsAlternatives(
   );
 }
 
-async function routeViaOpenRouteService(
+async function orsCandidates(
   coordinates: [number, number][],
   profile: RouteProfile,
   avoidHighways: boolean,
   avoidFerries: boolean
-): Promise<RouteResponse> {
+): Promise<OrsFeature[]> {
   // OpenRouteService has no motorcycle profile. Its full set is driving-car,
   // driving-hgv, four cycling profiles, two foot profiles and wheelchair — see
   // https://giscience.github.io/openrouteservice/run-instance/configuration/engine/profiles/
@@ -320,12 +389,36 @@ async function routeViaOpenRouteService(
     }
   );
 
-  const feature = pickCurviestFeature(data.features ?? [], profile, avoidHighways);
+  return data.features ?? [];
+}
+
+async function orsLeg(
+  coordinates: [number, number][],
+  profile: RouteProfile,
+  avoidHighways: boolean,
+  avoidFerries: boolean
+): Promise<RouteLeg> {
+  const feature = pickCurviestFeature(
+    await orsCandidates(coordinates, profile, avoidHighways, avoidFerries),
+    profile,
+    avoidHighways
+  );
+
   if (!feature) {
     throw new UpstreamError('OpenRouteService', 'Fant ingen rute mellom de valgte punktene');
   }
 
-  return buildRouteResponseFromOrsFeature(feature);
+  return orsFeatureToLeg(feature);
+}
+
+async function routeViaOpenRouteService(
+  coordinates: [number, number][],
+  profile: RouteProfile,
+  avoidHighways: boolean,
+  avoidFerries: boolean
+): Promise<RouteResponse> {
+  const leg = await orsLeg(coordinates, profile, avoidHighways, avoidFerries);
+  return responseFromLeg(leg, 'OpenRouteService', leg.elevations ? 'OpenRouteService (SRTM)' : null);
 }
 
 /**
@@ -336,23 +429,79 @@ async function routeViaOpenRouteService(
  * decides which route we end up here with, not what we say about it.
  */
 export function buildRouteResponseFromOrsFeature(feature: OrsFeature): RouteResponse {
-  // ORS returns [lng, lat, elevation] when elevation is requested.
+  const leg = orsFeatureToLeg(feature);
+  return responseFromLeg(leg, 'OpenRouteService', leg.elevations ? 'OpenRouteService (SRTM)' : null);
+}
+
+/** ORS returns [lng, lat, elevation] when elevation is requested. */
+export function orsFeatureToLeg(feature: OrsFeature): RouteLeg {
   const coords = feature.geometry.coordinates;
   const polyline: [number, number][] = coords.map((c) => [c[1], c[0]]);
+  const hasElevation = coords.length > 0 && coords.every((c) => typeof c[2] === 'number');
+
+  const directions = readOrsDirections(
+    feature.properties.segments ?? [],
+    polyline,
+    feature.properties.extras?.waytype?.values
+  );
+
+  return {
+    polyline,
+    distanceM: feature.properties.summary.distance,
+    durationS: feature.properties.summary.duration,
+    steps: directions.steps,
+    ferries: directions.ferries,
+    ferrySeconds: directions.ferrySeconds,
+    ferryStatus: directions.ferryStatus,
+    elevations: hasElevation ? coords.map((c) => c[2]) : null,
+  };
+}
+
+function osrmRouteToLeg(route: OsrmRoute): RouteLeg {
+  const directions = readOsrmDirections(route.legs ?? []);
+
+  return {
+    polyline: route.geometry.coordinates.map((c) => [c[1], c[0]]),
+    distanceM: route.distance,
+    durationS: route.duration,
+    steps: directions.steps,
+    ferries: directions.ferries,
+    ferrySeconds: directions.ferrySeconds,
+    ferryStatus: directions.ferryStatus,
+    elevations: null,
+  };
+}
+
+/**
+ * The one place a route turns into an answer, whichever engine and however many
+ * legs produced it. Keeping it single means the two backends cannot drift apart
+ * on distance, pace, elevation or cue sheet — which they have done before.
+ */
+function responseFromLeg(
+  leg: RouteLeg,
+  routing: string,
+  elevationSource: string | null,
+  sampledElevation?: { indices: number[]; values: number[] }
+): RouteResponse {
+  const { polyline } = leg;
   const distances = cumulativeDistancesKm(polyline);
 
-  const hasElevation = coords.every((c) => typeof c[2] === 'number');
-  const elevations = hasElevation ? coords.map((c) => c[2]) : null;
+  let elevationPoints: ElevationPoint[] = [];
 
-  const sampleStep = Math.max(1, Math.floor(coords.length / ELEVATION_SAMPLES));
-  const elevationPoints: ElevationPoint[] = [];
-
-  if (elevations) {
-    for (let i = 0; i < coords.length; i++) {
-      if (i === 0 || i === coords.length - 1 || i % sampleStep === 0) {
+  if (sampledElevation) {
+    elevationPoints = sampledElevation.indices.map((pointIndex, sampleIndex) => ({
+      distanceKm: round1(distances[pointIndex]),
+      elevationM: Math.round(sampledElevation.values[sampleIndex]),
+      lat: polyline[pointIndex][0],
+      lng: polyline[pointIndex][1],
+    }));
+  } else if (leg.elevations) {
+    const step = Math.max(1, Math.floor(polyline.length / ELEVATION_SAMPLES));
+    for (let i = 0; i < polyline.length; i++) {
+      if (i === 0 || i === polyline.length - 1 || i % step === 0) {
         elevationPoints.push({
           distanceKm: round1(distances[i]),
-          elevationM: Math.round(elevations[i]),
+          elevationM: Math.round(leg.elevations[i]),
           lat: polyline[i][0],
           lng: polyline[i][1],
         });
@@ -360,36 +509,41 @@ export function buildRouteResponseFromOrsFeature(feature: OrsFeature): RouteResp
     }
   }
 
-  const { summary } = feature.properties;
-  const distanceKm = round1(summary.distance / 1000);
+  const hasElevation = elevationPoints.length > 0;
+  const distanceKm = round1(leg.distanceM / 1000);
   const curvature = Math.round(curvatureDegPerKm(polyline));
-  const directions = readOrsDirections(
-    feature.properties.segments ?? [],
-    polyline,
-    feature.properties.extras?.waytype?.values
-  );
-  const durationMin = estimatedDurationMin(summary.duration, curvature, directions.ferrySeconds);
+  const durationMin = estimatedDurationMin(leg.durationS, curvature, leg.ferrySeconds);
 
   return {
     polyline,
     distanceKm,
     durationMin,
     elevationPoints,
-    steps: condense(directions.steps),
-    ferries: directions.ferries,
-    ferryStatus: directions.ferryStatus,
+    steps: condense(leg.steps),
+    ferries: leg.ferries,
+    ferryStatus: leg.ferryStatus,
     summary: {
       distanceKm,
       durationMin,
-      ...elevationStats(elevations ? elevationPoints : null),
+      ...elevationStats(hasElevation ? elevationPoints : null),
       curvatureDegPerKm: curvature,
     },
-    sources: {
-      routing: 'OpenRouteService',
-      elevation: elevations ? 'OpenRouteService (SRTM)' : null,
-    },
-    notes: buildNotes(elevations !== null),
+    sources: { routing, elevation: hasElevation ? elevationSource : null },
+    notes: buildNotes(hasElevation),
   };
+}
+
+/** OSRM has no elevation of its own, so it is looked up over the finished line. */
+async function responseFromOsrmLeg(leg: RouteLeg): Promise<RouteResponse> {
+  const indices = pickSampleIndices(leg.polyline.length, ELEVATION_SAMPLES);
+  const elevation = await lookupElevations(indices.map((i) => leg.polyline[i]));
+
+  return responseFromLeg(
+    leg,
+    'OSRM',
+    elevation?.source ?? null,
+    elevation ? { indices, values: elevation.values } : undefined
+  );
 }
 
 /* -------------------------------------------------------------------------- */
@@ -619,12 +773,12 @@ interface OsrmResponse {
   routes?: OsrmRoute[];
 }
 
-async function routeViaOsrm(
+async function osrmLeg(
   coordinates: [number, number][],
   profile: RouteProfile,
   avoidHighways: boolean,
   avoidFerries: boolean
-): Promise<RouteResponse> {
+): Promise<RouteLeg> {
   const coordsParam = coordinates.map((c) => `${c[0]},${c[1]}`).join(';');
   const url =
     `https://router.project-osrm.org/route/v1/driving/${coordsParam}` +
@@ -636,44 +790,16 @@ async function routeViaOsrm(
     throw new UpstreamError('OSRM', 'Fant ingen rute mellom de valgte punktene');
   }
 
-  const chosen = pickBestRoute(data.routes, profile, avoidHighways, avoidFerries);
-  const polyline: [number, number][] = chosen.geometry.coordinates.map((c) => [c[1], c[0]]);
-  const distances = cumulativeDistancesKm(polyline);
+  return osrmRouteToLeg(pickBestRoute(data.routes, profile, avoidHighways, avoidFerries));
+}
 
-  const sampleIndices = pickSampleIndices(polyline.length, ELEVATION_SAMPLES);
-  const elevation = await lookupElevations(sampleIndices.map((i) => polyline[i]));
-
-  const elevationPoints: ElevationPoint[] = elevation
-    ? sampleIndices.map((pointIndex, sampleIndex) => ({
-        distanceKm: round1(distances[pointIndex]),
-        elevationM: Math.round(elevation.values[sampleIndex]),
-        lat: polyline[pointIndex][0],
-        lng: polyline[pointIndex][1],
-      }))
-    : [];
-
-  const distanceKm = round1(chosen.distance / 1000);
-  const curvature = Math.round(curvatureDegPerKm(polyline));
-  const directions = readOsrmDirections(chosen.legs ?? []);
-  const durationMin = estimatedDurationMin(chosen.duration, curvature, directions.ferrySeconds);
-
-  return {
-    polyline,
-    distanceKm,
-    durationMin,
-    elevationPoints,
-    steps: condense(directions.steps),
-    ferries: directions.ferries,
-    ferryStatus: directions.ferryStatus,
-    summary: {
-      distanceKm,
-      durationMin,
-      ...elevationStats(elevation ? elevationPoints : null),
-      curvatureDegPerKm: curvature,
-    },
-    sources: { routing: 'OSRM', elevation: elevation?.source ?? null },
-    notes: buildNotes(elevation !== null),
-  };
+async function routeViaOsrm(
+  coordinates: [number, number][],
+  profile: RouteProfile,
+  avoidHighways: boolean,
+  avoidFerries: boolean
+): Promise<RouteResponse> {
+  return responseFromOsrmLeg(await osrmLeg(coordinates, profile, avoidHighways, avoidFerries));
 }
 
 /**
