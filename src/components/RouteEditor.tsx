@@ -4,7 +4,6 @@ import { type PlaceResult, searchPlaces } from '../api';
 import { hasCoords } from '../utils/geo';
 import { formatDuration } from '../utils/format';
 import { GeolocationError, getRiderPosition } from '../utils/geolocation';
-import { curvatureRankingApplies } from '../utils/routeProfile';
 import {
   ArrowUpDown,
   Clock,
@@ -48,6 +47,8 @@ interface RouteEditorProps {
   /** The route currently on the map, if any. Drives the status line. */
   summary?: RouteSummary | null;
   routeError?: string | null;
+  /** From the finished route: did the riding style get anything to choose from? */
+  rankedAlternatives?: boolean;
   isSuggestingLocation?: boolean;
   isLoading: boolean;
 }
@@ -119,6 +120,7 @@ export const RouteEditor: React.FC<RouteEditorProps> = ({
   onRetryRoute,
   summary = null,
   routeError = null,
+  rankedAlternatives,
   isSuggestingLocation = false,
   isLoading,
 }) => {
@@ -133,7 +135,6 @@ export const RouteEditor: React.FC<RouteEditorProps> = ({
 
   const placed = waypoints.filter(hasCoords);
   const placedCount = placed.length;
-  const rankingApplies = curvatureRankingApplies(placed);
 
   // Two points and no route yet means one is on its way: either in flight, or
   // waiting out the short debounce that follows the last edit.
@@ -305,13 +306,19 @@ export const RouteEditor: React.FC<RouteEditorProps> = ({
           only offer alternatives to rank on a plain A-to-B request, so on
           anything else "svingete" means avoiding motorways and nothing more.
         */}
-        {profile === 'curvy' && placedCount >= 2 && !rankingApplies && (
+        {/*
+          This notice used to predict, from the straight-line distance, that a
+          via point would leave the road choice to the engine. Routing per leg
+          made that prediction wrong most of the time — and it was a guess even
+          when it was right. The finished route now says whether the style got
+          anything to choose from, so this reports rather than forecasts.
+        */}
+        {profile === 'curvy' && summary && rankedAlternatives === false && (
           <p className="flex items-start gap-1.5 text-[11px] text-[#6B705C] leading-relaxed pt-0.5">
             <Info className="w-3.5 h-3.5 shrink-0 mt-px text-[#386641]" aria-hidden="true" />
             <span>
-              {placedCount > 2
-                ? 'Med via-punkt får vi bare ett rutealternativ, så her betyr «svingete» at motorvei unngås — veivalget er rutemotorens.'
-                : 'På lange strekk får vi bare ett rutealternativ, så her betyr «svingete» at motorvei unngås — veivalget er rutemotorens.'}
+              Rutemotoren tilbød bare én vei her, så «svingete» betyr at motorvei unngås — selve
+              veivalget er motorens.
             </span>
           </p>
         )}

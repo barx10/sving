@@ -93,6 +93,8 @@ interface RouteResponse {
   steps: RouteStep[];
   ferries: FerryCrossing[];
   ferryStatus: FerryStatus;
+  /** True when at least one leg was chosen from more than one candidate. */
+  rankedAlternatives: boolean;
   summary: {
     distanceKm: number;
     durationMin: number;
@@ -347,7 +349,8 @@ async function orsCandidates(
   coordinates: [number, number][],
   profile: RouteProfile,
   avoidHighways: boolean,
-  avoidFerries: boolean
+  avoidFerries: boolean,
+  withAlternatives: boolean
 ): Promise<OrsFeature[]> {
   // OpenRouteService has no motorcycle profile. Its full set is driving-car,
   // driving-hgv, four cycling profiles, two foot profiles and wheelchair — see
@@ -372,7 +375,7 @@ async function orsCandidates(
   const avoided = avoidedFeatures(avoidHighways, avoidFerries);
   if (avoided.length > 0) body.options = { avoid_features: avoided };
 
-  if (wantsOrsAlternatives(coordinates, profile)) {
+  if (withAlternatives) {
     body.alternative_routes = { target_count: 3, share_factor: 0.6, weight_factor: 1.6 };
   }
 
@@ -392,23 +395,53 @@ async function orsCandidates(
   return data.features ?? [];
 }
 
+/**
+ * ORS caps alternative_routes by road distance and answers a request over the
+ * cap with a 400. Road distance is not knowable before routing, so this used to
+ * be guarded by a guessed straight-line threshold of 60 km — and a leg four
+ * kilometres over it, Oslo to Rakkestad at 64, silently got no alternatives at
+ * all and came back down the E18. Guessing the cap was the mistake: ask for
+ * what we want, and take the rejection as the answer it is.
+ */
+function alternativesRejected(err: unknown): boolean {
+  return err instanceof UpstreamError && err.status === 400;
+}
+
 async function orsLeg(
   coordinates: [number, number][],
   profile: RouteProfile,
   avoidHighways: boolean,
   avoidFerries: boolean
 ): Promise<RouteLeg> {
-  const feature = pickCurviestFeature(
-    await orsCandidates(coordinates, profile, avoidHighways, avoidFerries),
-    profile,
-    avoidHighways
-  );
+  const wantsAlternatives = profile !== 'fastest';
+  let features: OrsFeature[];
+
+  try {
+    features = await orsCandidates(
+      coordinates,
+      profile,
+      avoidHighways,
+      avoidFerries,
+      wantsAlternatives
+    );
+  } catch (err) {
+    if (!wantsAlternatives || !alternativesRejected(err)) throw err;
+
+    console.warn(
+      `[route] ORS declined alternatives for this leg (${
+        err instanceof UpstreamError && err.detail ? err.detail : 'ingen detalj'
+      }) — asking again without them`
+    );
+    features = await orsCandidates(coordinates, profile, avoidHighways, avoidFerries, false);
+  }
+
+  const feature = pickCurviestFeature(features, profile, avoidHighways);
 
   if (!feature) {
     throw new UpstreamError('OpenRouteService', 'Fant ingen rute mellom de valgte punktene');
   }
 
-  return orsFeatureToLeg(feature);
+  return { ...orsFeatureToLeg(feature), rankedFrom: features.length };
 }
 
 async function routeViaOpenRouteService(
@@ -522,6 +555,7 @@ function responseFromLeg(
     steps: condense(leg.steps),
     ferries: leg.ferries,
     ferryStatus: leg.ferryStatus,
+    rankedAlternatives: (leg.rankedFrom ?? 1) > 1,
     summary: {
       distanceKm,
       durationMin,

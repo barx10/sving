@@ -28,6 +28,12 @@ export interface RouteLeg {
   ferryStatus: FerryStatus;
   /** One per polyline point, when the engine supplied them. */
   elevations: number[] | null;
+  /**
+   * How many candidates this leg was chosen from. One means the engine offered
+   * no choice, and the riding style shaped nothing on it — worth telling the
+   * rider rather than implying a route was picked for them.
+   */
+  rankedFrom?: number;
 }
 
 /**
@@ -109,6 +115,7 @@ export function stitchLegs(legs: RouteLeg[]): RouteLeg {
     // One leg the engine could not describe leaves the whole route uncertain:
     // the ferry we were not told about could be on any of them.
     ferryStatus: legs.every((leg) => leg.ferryStatus === 'known') ? 'known' : 'unknown',
+    rankedFrom: Math.max(...legs.map((leg) => leg.rankedFrom ?? 1)),
     elevations: everyLegHasElevation && elevations.length === polyline.length ? elevations : null,
   };
 }
