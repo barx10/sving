@@ -768,6 +768,7 @@ export default function App() {
               onNotify={pushNotice}
               onRetryRoute={handleRetryRoute}
               summary={route?.summary ?? null}
+              rankedAlternatives={route?.rankedAlternatives}
               routeError={routeError}
               isSuggestingLocation={isSuggestingLocation}
               isLoading={isLoadingRoute}

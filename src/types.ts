@@ -69,6 +69,12 @@ export interface RouteResult {
   steps: RouteStep[];
   ferries: FerryCrossing[];
   /**
+   * Whether the riding style actually got to choose. False means the engine
+   * offered one road and the style shaped nothing — which the planner says
+   * outright rather than implying the route was picked for the rider.
+   */
+  rankedAlternatives: boolean;
+  /**
    * 'unknown' when the engine could not say where ferries are. An empty list
    * then means we were not told, not that the route stays on land.
    */
