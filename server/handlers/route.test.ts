@@ -6,6 +6,7 @@ import {
   type OsrmRoute,
   buildRouteResponseFromOrsFeature,
   elevationStats,
+  avoidedFeatures,
   estimatedDurationMin,
   isRetryableRoundTripFailure,
   paceAdjustment,
@@ -397,5 +398,33 @@ describe('avoiding ferries on the OSRM path', () => {
     const overLand = candidate(straightLine, 260);
 
     expect(pickBestRoute([viaFerry, overLand], 'curvy', true, false)).toBe(viaFerry);
+  });
+});
+
+/**
+ * Reported from a round trip out of Oslo: flipping "Unngå motorvei" returned a
+ * byte-identical route, distance, time and all. The rule read
+ * `avoidHighways || profile !== 'fastest'`, so picking "Svingete veier" avoided
+ * motorways whatever the switch said — a control that could not control
+ * anything in the style most riders use.
+ */
+describe('avoidedFeatures', () => {
+  it('keeps motorways out when the rider asks, whichever style is picked', () => {
+    expect(avoidedFeatures(true, false)).toContain('highways');
+  });
+
+  it('lets them back in when the rider turns the switch off', () => {
+    expect(avoidedFeatures(false, false)).toEqual([]);
+  });
+
+  it('no longer decides anything from the riding style', () => {
+    // The style is not even an argument any more, which is the fix: it cannot
+    // quietly override a switch it is not given.
+    expect(avoidedFeatures.length).toBe(2);
+  });
+
+  it('adds ferries independently of the motorway switch', () => {
+    expect(avoidedFeatures(false, true)).toEqual(['ferries']);
+    expect(avoidedFeatures(true, true)).toEqual(['highways', 'tollways', 'ferries']);
   });
 });

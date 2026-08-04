@@ -56,7 +56,7 @@ const PROFILES: { id: RouteProfile; label: string; hint: string; icon: React.Rea
   {
     id: 'curvy',
     label: 'Svingete veier',
-    hint: 'Unngår motorvei og velger den mest svingete av rutene motoren tilbyr.',
+    hint: 'Slår på motorvei-bryteren under, og velger den mest svingete av rutene motoren tilbyr.',
     icon: <Flame className="w-4 h-4 mb-1 text-[#386641]" />,
   },
   {
@@ -316,9 +316,14 @@ export const RouteEditor: React.FC<RouteEditorProps> = ({
           </p>
         )}
 
+        {/* Was "Unngå motorvei (E-veier)", which promised something no routing
+            engine does: they exclude by road class, never by road name. An
+            E-road built as an ordinary road stays available, and on a route
+            like Oslo–Drøbak that is most of the E-road mileage. */}
         <Switch
           icon={<ShieldAlert className="w-4 h-4 text-[#386641]" />}
-          label="Unngå motorvei (E-veier)"
+          label="Unngå motorvei og bomvei"
+          hint="Gjelder motorvei- og bomveiklasse. En E-vei som er vanlig landevei kan fortsatt bli brukt."
           checked={avoidHighways}
           onChange={setAvoidHighways}
         />
